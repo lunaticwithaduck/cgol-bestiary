@@ -451,6 +451,146 @@ impl Universe {
     /// let alive_cells = universe.to_coords().into_iter().collect::<Vec<_>>();
     /// println!("Found {} alive cells", alive_cells.len());
     /// ```
+    /// Bounding box of the live cells as `(min_x, min_y, max_x, max_y)`, or
+    /// `None` if the universe is empty.
+    ///
+    /// A node's bounding box relative to its own corner does not depend on
+    /// where the node sits, so it can be memoised across the shared DAG. That
+    /// makes this proportional to the number of *distinct* nodes. Deriving the
+    /// same answer from `to_coords` costs the whole population, and a plain
+    /// recursive walk without the memo would revisit shared subtrees once per
+    /// path through them.
+    pub fn bounds(&self) -> Option<(i64, i64, i64, i64)> {
+        let mut memo: FxHashMap<NodeId, Option<(i64, i64, i64, i64)>> = FxHashMap::default();
+        let rel = self.bounds_aux(self.root, &mut memo)?;
+        let k = self.dim();
+        // `visit_region` and `to_coords` place the root centred on the origin.
+        let half = 1i64 << (k.max(1) - 1);
+        Some((rel.0 - half, rel.1 - half, rel.2 - half, rel.3 - half))
+    }
+
+    /// Bounding box relative to the node's own bottom-left corner.
+    fn bounds_aux(
+        &self,
+        id: NodeId,
+        memo: &mut FxHashMap<NodeId, Option<(i64, i64, i64, i64)>>,
+    ) -> Option<(i64, i64, i64, i64)> {
+        if let Some(&hit) = memo.get(&id) {
+            return hit;
+        }
+        let Node { a, b, c, d, n, k } = self.nodes[id];
+        let out = if n == 0 {
+            None
+        } else if k == 1 {
+            // Cell layout as in `to_coords_aux`: a/b are the northern pair, so
+            // they sit at relative y = 1 and c/d at y = 0.
+            let mut acc: Option<(i64, i64, i64, i64)> = None;
+            for (child, x, y) in [(a, 0, 1), (b, 1, 1), (c, 0, 0), (d, 1, 0)] {
+                if child == ALIVE {
+                    acc = Some(match acc {
+                        None => (x, y, x, y),
+                        Some(p) => (p.0.min(x), p.1.min(y), p.2.max(x), p.3.max(y)),
+                    });
+                }
+            }
+            acc
+        } else {
+            let half = 1i64 << (k - 1);
+            let mut acc: Option<(i64, i64, i64, i64)> = None;
+            for (child, dx, dy) in [(a, 0, half), (b, half, half), (c, 0, 0), (d, half, 0)] {
+                if let Some(p) = self.bounds_aux(child, memo) {
+                    let shifted = (p.0 + dx, p.1 + dy, p.2 + dx, p.3 + dy);
+                    acc = Some(match acc {
+                        None => shifted,
+                        Some(q) => (
+                            q.0.min(shifted.0),
+                            q.1.min(shifted.1),
+                            q.2.max(shifted.2),
+                            q.3.max(shifted.3),
+                        ),
+                    });
+                }
+            }
+            acc
+        };
+        memo.insert(id, out);
+        out
+    }
+
+    /// Walk the quadtree, visiting only the nodes that intersect the inclusive
+    /// world rectangle `[x0, x1] x [y0, y1]`.
+    ///
+    /// Descent stops at any node that is empty, that misses the rectangle
+    /// entirely, or whose side length is `<= min_size`. The callback receives
+    /// `(left, bottom, side, population)` — the node's extent in world
+    /// coordinates and how many live cells it contains in aggregate.
+    ///
+    /// This is what makes drawing a huge universe affordable: cost is
+    /// proportional to the number of *visible* nodes, not to the population.
+    /// `to_coords` materialises every live cell (1.6GB for a 100-million-cell
+    /// metapixel) and `is_alive` costs a full descent per cell.
+    ///
+    /// Recall that `y` increases northward, so `bottom` is the smaller `y`.
+    pub fn visit_region<F>(&self, x0: i64, y0: i64, x1: i64, y1: i64, min_size: i64, f: &mut F)
+    where
+        F: FnMut(i64, i64, i64, usize),
+    {
+        self.visit_aux(self.root, 0, 0, x0, y0, x1, y1, min_size.max(1), f);
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn visit_aux<F>(
+        &self,
+        id: NodeId,
+        c_x: i64,
+        c_y: i64,
+        x0: i64,
+        y0: i64,
+        x1: i64,
+        y1: i64,
+        min_size: i64,
+        f: &mut F,
+    ) where
+        F: FnMut(i64, i64, i64, usize),
+    {
+        let Node { a, b, c, d, n, k } = self.nodes[id];
+        if n == 0 {
+            return;
+        }
+
+        // A level-k node centred on (c_x, c_y) spans
+        // [c_x - 2^(k-1), c_x + 2^(k-1) - 1] on each axis.
+        let half = 1i64 << (k.max(1) - 1);
+        let (left, bottom) = (c_x - half, c_y - half);
+        if left + 2 * half - 1 < x0 || left > x1 || bottom + 2 * half - 1 < y0 || bottom > y1 {
+            return;
+        }
+
+        let side = 2 * half;
+        if side <= min_size {
+            f(left, bottom, side, n);
+            return;
+        }
+
+        if k == 1 {
+            // Children are individual cells, laid out as in `to_coords_aux`.
+            for (child, x, y) in
+                [(a, c_x - 1, c_y), (b, c_x, c_y), (c, c_x - 1, c_y - 1), (d, c_x, c_y - 1)]
+            {
+                if child == ALIVE && x >= x0 && x <= x1 && y >= y0 && y <= y1 {
+                    f(x, y, 1, 1);
+                }
+            }
+            return;
+        }
+
+        let s = half / 2; // == offset(k), the child centre displacement
+        self.visit_aux(a, c_x - s, c_y + s, x0, y0, x1, y1, min_size, f);
+        self.visit_aux(b, c_x + s, c_y + s, x0, y0, x1, y1, min_size, f);
+        self.visit_aux(c, c_x - s, c_y - s, x0, y0, x1, y1, min_size, f);
+        self.visit_aux(d, c_x + s, c_y - s, x0, y0, x1, y1, min_size, f);
+    }
+
     pub fn to_coords(&self) -> impl CellContainer {
         let mut points = vec![];
         let offset = offset(self.dim());

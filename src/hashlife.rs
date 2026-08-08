@@ -1,19 +1,24 @@
 //! HashLife backend, for the patterns the bitmap engine cannot represent.
 //!
-//! Wraps [`golback`], a quadtree/hash-consing engine. Two properties of its
-//! API shape everything here:
+//! Wraps our vendored [`golback`], a quadtree/hash-consing engine.
 //!
-//! * **The way in and the way out are both flat lists of cells.**
-//!   `from_coords` takes every coordinate and `to_coords` returns every
-//!   coordinate, so both cost population rather than node count. That imposes
-//!   [`MAX_CELLS`] — `metapixel-parity64` would need 1.6GB just for the input
-//!   vector.
-//! * **`is_alive` is far too slow to render with**, at roughly 290ms per
-//!   megapixel. So rendering rasterises a cached cell list instead: O(pixels)
-//!   to clear plus O(population) to plot, rather than O(pixels) tree descents.
+//! Nothing on the hot path costs population. Rendering **walks the quadtree**,
+//! descending only into nodes that intersect the viewport and stopping below a
+//! pixel, so it costs visible-node count. Population comes straight off the
+//! root node, and the bounding box from a memoised tree walk that costs
+//! distinct-node count. `to_coords` — which materialises every live cell — is
+//! now only reachable through [`HashWorld::snapshot_cells`], used by the tests
+//! to diff the quadtree walk against a naive rasteriser.
 //!
-//! The universe also does not grow itself — undersize it and escaping gliders
-//! are silently lost — so [`HashWorld::load`] sizes it with headroom up front.
+//! Two things upstream does not do, both handled here:
+//!
+//! * **Loading still flattens.** `from_coords` wants every coordinate, so
+//!   [`MAX_CELLS`] stands: `metapixel-parity64` would need 1.6GB of pairs to
+//!   load a pattern its own file describes in 5,572 nodes. Building the tree
+//!   directly from a macrocell DAG would remove this.
+//! * **The universe does not grow itself.** Undersize it and escaping cells are
+//!   lost in silence, so [`HashWorld::load_cells`] sizes it with headroom and
+//!   [`HashWorld::step`] stops once the pattern could be reaching an edge.
 
 use crate::macrocell::Macrocell;
 use golback::universe::Universe;
@@ -33,10 +38,38 @@ const MAX_LEVEL: u32 = 44;
 
 const SCRATCH: usize = 1 << 20;
 
+const ALIVE: [u8; 4] = [0x7e, 0xe7, 0x87, 0xff];
+const DEAD: [u8; 4] = [0x0b, 0x0e, 0x14, 0xff];
+
+/// Camera geometry for one frame.
+struct View {
+    cells_per_pixel: i64,
+    pixels_per_cell: i64,
+    cam_x: i64,
+    cam_y: i64,
+    span_x: i64,
+    span_y: i64,
+}
+
+/// Paint a `size`x`size` square of live cells at pixel `(px, py)`, clipped.
+fn fill(rgba: &mut [u8], w: usize, h: usize, px: i64, py: i64, size: i64) {
+    if px + size <= 0 || py + size <= 0 || px >= w as i64 || py >= h as i64 {
+        return;
+    }
+    for y in py.max(0)..(py + size).min(h as i64) {
+        let row = y as usize * w * 4;
+        for x in px.max(0)..(px + size).min(w as i64) {
+            let i = row + x as usize * 4;
+            rgba[i..i + 4].copy_from_slice(&ALIVE);
+        }
+    }
+}
+
 pub struct HashWorld {
     universe: Universe,
-    /// Snapshot of the live cells, refreshed only when the universe advances.
+    /// Live cells, filled in only by `render_from_cells` for the tests.
     cells: Vec<(i64, i64)>,
+    population: usize,
     rgba: Vec<u8>,
     scratch: Vec<u8>,
     bbox: (i64, i64, i64, i64),
@@ -69,6 +102,7 @@ impl HashWorld {
         Self {
             universe: Universe::new(),
             cells: Vec::new(),
+            population: 0,
             rgba: Vec::new(),
             scratch: vec![0; SCRATCH],
             bbox: (0, 0, 0, 0),
@@ -162,8 +196,13 @@ impl HashWorld {
         self.level
     }
 
-    /// Live cells, as last snapshotted from the quadtree.
-    pub fn cells(&self) -> &[(i64, i64)] {
+    /// Pull every live cell out of the quadtree.
+    ///
+    /// Costs population, unlike everything else on the hot path, so it is not
+    /// used for rendering or stepping — only by the tests and by
+    /// [`render_from_cells`](Self::render_from_cells).
+    pub fn snapshot_cells(&mut self) -> &[(i64, i64)] {
+        self.cells = self.universe.to_coords().into_iter().collect();
         &self.cells
     }
 
@@ -186,26 +225,19 @@ impl HashWorld {
         }
     }
 
-    /// Pull the cell list out of the quadtree and recompute the bounding box.
+    /// Recompute the bounding box and population from the quadtree.
+    ///
+    /// Both come from the tree rather than from a cell list, so stepping costs
+    /// distinct-node count rather than population. `to_coords` is now only
+    /// touched by [`render_from_cells`](Self::render_from_cells), which exists
+    /// for the tests to diff the quadtree walk against.
     fn refresh(&mut self) {
-        self.cells = self.universe.to_coords().into_iter().collect();
-        self.bbox = match self.cells.first() {
-            None => (0, 0, 0, 0),
-            Some(&(x, y)) => {
-                let (mut x0, mut y0, mut x1, mut y1) = (x, y, x, y);
-                for &(x, y) in &self.cells {
-                    x0 = x0.min(x);
-                    y0 = y0.min(y);
-                    x1 = x1.max(x);
-                    y1 = y1.max(y);
-                }
-                (x0, y0, x1, y1)
-            }
-        };
+        self.population = self.universe.population();
+        self.bbox = self.universe.bounds().unwrap_or((0, 0, 0, 0));
     }
 
     pub fn population(&self) -> f64 {
-        self.cells.len() as f64
+        self.population as f64
     }
 
     pub fn generation(&self) -> f64 {
@@ -216,15 +248,35 @@ impl HashWorld {
         self.bbox
     }
 
-    /// Rasterise the cached cells into an RGBA viewport.
+    /// Geometry shared by both renderers, derived from the camera and zoom.
     ///
-    /// `scale > 0` draws each cell as `scale`×`scale` pixels; `scale < 0`
-    /// packs `-scale` cells into each pixel. Camera coordinates are `f64`
-    /// because a level-26 universe runs past what an `i32` can address.
-    pub fn render(&mut self, cam_x: f64, cam_y: f64, scale: i32, w: usize, h: usize) -> *const u8 {
-        const ALIVE: [u8; 4] = [0x7e, 0xe7, 0x87, 0xff];
-        const DEAD: [u8; 4] = [0x0b, 0x0e, 0x14, 0xff];
+    /// `cells_per_pixel` is forced to a power of two and the camera is snapped
+    /// to a multiple of it. Both are needed for the quadtree walk to be exact:
+    /// nodes are power-of-two sized and aligned, so with an arbitrary ratio or
+    /// an unsnapped camera a node can straddle two pixels and the walk has no
+    /// way to decide which one to light.
+    fn view(&self, cam_x: f64, cam_y: f64, scale: i32, w: usize, h: usize) -> View {
+        let zoom = if scale == 0 { 1 } else { scale };
+        let cells_per_pixel = if zoom > 0 {
+            1
+        } else {
+            let k = (-zoom) as i64;
+            1i64 << (63 - k.leading_zeros())
+        };
+        let pixels_per_cell = if zoom > 0 { zoom as i64 } else { 1 };
+        View {
+            cells_per_pixel,
+            pixels_per_cell,
+            cam_x: (cam_x.floor() as i64).div_euclid(cells_per_pixel) * cells_per_pixel,
+            cam_y: (cam_y.floor() as i64).div_euclid(cells_per_pixel) * cells_per_pixel,
+            // Round up: a partial pixel at the edge still needs its cells.
+            // `i64::div_ceil` is unstable, and both values are positive here.
+            span_x: (w as i64 + pixels_per_cell - 1) / pixels_per_cell * cells_per_pixel,
+            span_y: (h as i64 + pixels_per_cell - 1) / pixels_per_cell * cells_per_pixel,
+        }
+    }
 
+    fn begin_frame(&mut self, w: usize, h: usize) {
         let needed = w * h * 4;
         if self.rgba.len() != needed {
             self.rgba.resize(needed, 0);
@@ -232,36 +284,76 @@ impl HashWorld {
         for px in self.rgba.chunks_exact_mut(4) {
             px.copy_from_slice(&DEAD);
         }
+    }
 
-        let zoom = if scale == 0 { 1 } else { scale };
-        let (cx, cy) = (cam_x.floor() as i64, cam_y.floor() as i64);
+    /// Draw a window of the universe into an RGBA buffer by **walking the
+    /// quadtree**, descending only into nodes that intersect the viewport and
+    /// stopping at anything smaller than a pixel.
+    ///
+    /// Cost is proportional to the number of visible nodes, so it is unaffected
+    /// by population — which is the whole point. Camera coordinates are `f64`
+    /// because a level-44 universe runs far past what an `i32` can address.
+    pub fn render(&mut self, cam_x: f64, cam_y: f64, scale: i32, w: usize, h: usize) -> *const u8 {
+        self.begin_frame(w, h);
+        if !self.loaded || w == 0 || h == 0 {
+            return self.rgba.as_ptr();
+        }
+        let v = self.view(cam_x, cam_y, scale, w, h);
 
-        for &(x, y) in &self.cells {
-            let (dx, dy) = (x - cx, y - cy);
-            let (px, py, size) = if zoom > 0 {
-                (dx * zoom as i64, dy * zoom as i64, zoom as i64)
-            } else {
-                let k = (-zoom) as i64;
-                // div_euclid so cells left of the camera floor correctly
-                // rather than truncating toward zero.
-                (dx.div_euclid(k), dy.div_euclid(k), 1)
-            };
-            if px + size <= 0 || py + size <= 0 || px >= w as i64 || py >= h as i64 {
-                continue;
-            }
-            for oy in py.max(0)..(py + size).min(h as i64) {
-                let row = oy as usize * w * 4;
-                for ox in px.max(0)..(px + size).min(w as i64) {
-                    let i = row + ox as usize * 4;
-                    self.rgba[i..i + 4].copy_from_slice(&ALIVE);
-                }
+        // Disjoint field borrows: the walk reads `universe`, the closure writes
+        // `rgba`.
+        let universe = &self.universe;
+        let rgba = &mut self.rgba;
+
+        universe.visit_region(
+            v.cam_x,
+            v.cam_y,
+            v.cam_x + v.span_x - 1,
+            v.cam_y + v.span_y - 1,
+            v.cells_per_pixel,
+            &mut |left, bottom, side, _population| {
+                let px0 = (left - v.cam_x).div_euclid(v.cells_per_pixel) * v.pixels_per_cell;
+                let py0 = (bottom - v.cam_y).div_euclid(v.cells_per_pixel) * v.pixels_per_cell;
+                let size = (side / v.cells_per_pixel).max(1) * v.pixels_per_cell;
+                fill(rgba, w, h, px0, py0, size);
+            },
+        );
+        self.rgba.as_ptr()
+    }
+
+    /// The previous renderer: plot every cached live cell. Kept because it is
+    /// obviously correct and independent of the quadtree walk, which lets the
+    /// tests diff one against the other.
+    pub fn render_from_cells(
+        &mut self,
+        cam_x: f64,
+        cam_y: f64,
+        scale: i32,
+        w: usize,
+        h: usize,
+    ) -> &[u8] {
+        self.begin_frame(w, h);
+        if self.loaded && w > 0 && h > 0 {
+            self.snapshot_cells();
+            let v = self.view(cam_x, cam_y, scale, w, h);
+            let cells = &self.cells;
+            let rgba = &mut self.rgba;
+            for &(x, y) in cells {
+                let px = (x - v.cam_x).div_euclid(v.cells_per_pixel) * v.pixels_per_cell;
+                let py = (y - v.cam_y).div_euclid(v.cells_per_pixel) * v.pixels_per_cell;
+                fill(rgba, w, h, px, py, v.pixels_per_cell);
             }
         }
-        self.rgba.as_ptr()
+        &self.rgba
     }
 
     pub fn render_len(&self) -> u32 {
         self.rgba.len() as u32
+    }
+
+    /// The frame buffer as last rendered.
+    pub fn rgba(&self) -> &[u8] {
+        &self.rgba
     }
 
     pub fn scratch(&mut self) -> &mut [u8] {
