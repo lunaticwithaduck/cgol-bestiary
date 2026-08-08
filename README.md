@@ -1,4 +1,4 @@
-# conway
+# cgol-bestiary
 
 A browser and showcase stage for the LifeWiki pattern collection, on top of a
 bit-parallel Game of Life engine written in Rust and compiled to WebAssembly.

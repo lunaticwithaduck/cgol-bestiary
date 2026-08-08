@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>conway — a stage for the LifeWiki pattern collection</title>
+<title>cgol-bestiary — a measured atlas of Conway's Life patterns</title>
 <style>
   :root {
     --bg: #0b0e14;
@@ -136,8 +136,8 @@
 <body>
 
 <header>
-  <h1>conway<span>//</span>wasm</h1>
-  <span class="sub">bit-parallel Life &middot; every property below was measured by running the pattern</span>
+  <h1>cgol<span>//</span>bestiary</h1>
+  <span class="sub">bit-parallel &amp; HashLife engines &middot; every property below was measured by running the pattern</span>
 </header>
 
 <div id="layout">
@@ -220,14 +220,14 @@ addEventListener('unhandledrejection', e => banner(`Unhandled rejection: ${e.rea
 let wasm, catalog;
 try {
   const [mod, cat] = await Promise.all([
-    WebAssembly.instantiateStreaming(fetch('conway.wasm'), {}),
+    WebAssembly.instantiateStreaming(fetch('cgol_bestiary.wasm'), {}),
     fetch('catalog.json').then(r => r.ok ? r.json() : Promise.reject(new Error(`catalog.json → HTTP ${r.status}`))),
   ]);
   wasm = mod.instance.exports;
   catalog = cat;
 } catch (err) {
   fatal(`Could not start.\n\n${err}\n\n` +
-        `Expected www/conway.wasm and www/catalog.json. Build them with:\n` +
+        `Expected www/cgol_bestiary.wasm and www/catalog.json. Build them with:\n` +
         `  ./build.sh\n  ./fetch-patterns.sh\n  cargo run --release --bin index\n\n` +
         `Then serve over HTTP (python3 -m http.server 8080 --directory www).`);
 }
@@ -693,7 +693,7 @@ $('zoomOut').onclick = () => zoomBy(-1, canvas.width / 2, canvas.height / 2);
 $('fit').onclick = fitView;
 /* ---------- details pane ---------- */
 
-const DETAIL_KEY = 'conway.detailsCollapsed';
+const DETAIL_KEY = 'cgol-bestiary.detailsCollapsed';
 
 function setDetailCollapsed(on) {
   $('detail').classList.toggle('collapsed', on);

@@ -4,9 +4,9 @@
 //! tests is not to confirm it compiles — it is to hold it against the
 //! bit-parallel engine, which is itself pinned to published Life results.
 
-use conway::bitgrid::Rng;
-use conway::hashlife::HashWorld;
-use conway::{BitGrid, Boundary, Macrocell};
+use cgol_bestiary::bitgrid::Rng;
+use cgol_bestiary::hashlife::HashWorld;
+use cgol_bestiary::{BitGrid, Boundary, Macrocell};
 use std::collections::BTreeSet;
 
 /// Cells normalised so the top-left of the bounding box sits at the origin,

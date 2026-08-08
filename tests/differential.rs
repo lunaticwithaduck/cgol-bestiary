@@ -2,9 +2,9 @@
 //! show up hundreds of generations in, or only at a word boundary. So: diff
 //! every generation against the naive oracle.
 
-use conway::bitgrid::Rng;
-use conway::pattern::{self, Pattern};
-use conway::{BitGrid, NaiveGrid};
+use cgol_bestiary::bitgrid::Rng;
+use cgol_bestiary::pattern::{self, Pattern};
+use cgol_bestiary::{BitGrid, NaiveGrid};
 
 fn assert_same(fast: &BitGrid, slow: &NaiveGrid, ctx: &str) {
     assert_eq!(fast.width(), slow.width(), "{ctx}: width");

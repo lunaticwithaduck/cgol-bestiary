@@ -3,10 +3,10 @@
 //! Every figure here is a published property of the pattern, so these check
 //! the analyser and the engine underneath it at the same time.
 
-use conway::analysis::{analyse, Budget, Class};
-use conway::pattern::{self, Pattern};
+use cgol_bestiary::analysis::{analyse, Budget, Class};
+use cgol_bestiary::pattern::{self, Pattern};
 
-fn classify(rle: &str, budget: Budget) -> conway::Analysis {
+fn classify(rle: &str, budget: Budget) -> cgol_bestiary::Analysis {
     analyse(&Pattern::parse_rle(rle).expect("valid RLE"), budget)
 }
 
@@ -104,7 +104,7 @@ fn oversized_patterns_are_reported_not_simulated() {
 
 #[test]
 fn speed_notation_reduces_fractions() {
-    use conway::analysis::speed_string;
+    use cgol_bestiary::analysis::speed_string;
     assert_eq!(speed_string(1, 1, 4), "c/4 diagonal");
     assert_eq!(speed_string(0, 2, 4), "c/2 orthogonal");
     assert_eq!(speed_string(4, 0, 8), "c/2 orthogonal");

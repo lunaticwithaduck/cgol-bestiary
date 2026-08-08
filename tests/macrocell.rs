@@ -5,7 +5,7 @@
 //! every level, so a wrong shift produces a number that still looks perfectly
 //! reasonable. Hence the explicit quadrant tests.
 
-use conway::macrocell::Macrocell;
+use cgol_bestiary::macrocell::Macrocell;
 
 /// An 8x8 leaf holding a glider at its top-left corner. Five cells, spanning
 /// (0,0)..(2,2).

@@ -3,7 +3,7 @@
 //! Answers the only question that matters about the bit tricks: how much did
 //! they actually buy over counting neighbours one at a time?
 
-use conway::{BitGrid, NaiveGrid};
+use cgol_bestiary::{BitGrid, NaiveGrid};
 use std::time::Instant;
 
 fn rate(cells: usize, gens: usize, secs: f64) -> String {
@@ -15,7 +15,7 @@ fn main() {
     {
         let (w, h, gens) = (512, 512, 20);
         let mut g = NaiveGrid::new(w, h);
-        let mut r = conway::bitgrid::Rng::new(42);
+        let mut r = cgol_bestiary::bitgrid::Rng::new(42);
         for y in 0..h {
             for x in 0..w {
                 g.set(x, y, r.next() % 100 < 32);

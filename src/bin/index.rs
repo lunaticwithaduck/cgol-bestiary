@@ -2,7 +2,7 @@
 //!
 //! Two corpora, handled differently:
 //!
-//!   RLE       — parsed, then *run* through [`conway::analyse`] to derive
+//!   RLE       — parsed, then *run* through [`cgol_bestiary::analyse`] to derive
 //!               period, speed and class.
 //!   Macrocell — parsed as a quadtree DAG and measured structurally. These
 //!               patterns cannot be simulated by the bitmap engine at all, so
@@ -11,9 +11,9 @@
 //! `cargo run --release --bin index -- [--patterns DIR] [--patterns-mc DIR]
 //!                                     [--out FILE] [--max-gens N] [--limit N]`
 
-use conway::analysis::{analyse, Analysis, Budget, Class};
-use conway::macrocell::Macrocell;
-use conway::pattern::Pattern;
+use cgol_bestiary::analysis::{analyse, Analysis, Budget, Class};
+use cgol_bestiary::macrocell::Macrocell;
+use cgol_bestiary::pattern::Pattern;
 use std::fmt::Write as _;
 use std::path::PathBuf;
 use std::time::Instant;
