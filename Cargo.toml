@@ -2,6 +2,8 @@
 name = "cgol-bestiary"
 version = "0.1.0"
 edition = "2021"
+license = "MIT"
+repository = "https://github.com/lunaticwithaduck/cgol-bestiary"
 
 [lib]
 crate-type = ["cdylib", "rlib"]

@@ -326,6 +326,22 @@ benchmark for it runs StreamLife across eight worker threads, which is exactly
 what wasm cannot do. The Demonoid gives the same self-replication payoff at
 106,639 cells.
 
+## Licence
+
+This project is **MIT** — see [LICENSE](LICENSE). Fork it, sell it, do as you
+like.
+
+Two things inside it are not mine:
+
+- **`vendor/golback/`** is MIT, © 2026 Fernando Avalos, with its notice
+  preserved at `vendor/golback/LICENSE`. Our changes to it are described in
+  `vendor/golback/VENDORED.md` and are visible as a diff from the commit that
+  vendored it untouched.
+- **The patterns are not in this repository at all** — `fetch-patterns.sh` pulls
+  them at build time. They are the work of the Life community, LifeWiki content
+  is CC BY-SA 3.0, and each file carries its own `#N`/`#O`/`#C` attribution. If
+  you start redistributing them, that obligation comes with them.
+
 ## Threads left hanging
 
 Please fork it and make something better. These are the loose ends, roughly in
