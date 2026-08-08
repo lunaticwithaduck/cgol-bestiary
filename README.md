@@ -80,12 +80,50 @@ can span the jump. A glider runs 8,000,000 generations and travels exactly
 2,000,000 cells with its population intact. The only real limit left is `i64`
 coordinates at level 60, reported rather than allowed to corrupt anything.
 
-### What still costs population
+**`combine` / `empty` / `CELL_ALIVE`** — enough to assemble a tree directly, so
+a macrocell file can be loaded by **rebuilding its quadtree node for node**
+rather than expanding it to coordinates. The two formats are the same structure:
+a macrocell leaf is an 8×8 block and golback's levels are `log2(side)`, so
+leaves become level-3 nodes and branches map one for one.
 
-Loading. `from_coords` wants every coordinate, so `MAX_CELLS` stands at 8
-million: `metapixel-parity64` would need **1.6GB** of pairs and 14.6 seconds to
-load a pattern its own file describes in 5,572 nodes. 23 of the 25 fit; the two
-100M-cell metapixels are refused with an explanation rather than an OOM.
+That removed the ceiling completely — all 25 patterns load, populations exact:
+
+| | cells | load | nodes |
+|---|---|---|---|
+| `metapixel-p216-gun` | 128,116,349 | 0.003s | 8,008 |
+| `metapixel-parity64` | 100,491,984 | 0.003s | 7,112 |
+| `metapixel-galaxy` | 7,408,195 | 0.003s | 7,083 |
+
+`parity64` previously needed 1.6GB of pairs and 14.6 seconds; `p216-gun` was out
+of reach. Its own file says *"requires Golly"*.
+
+The mapping carries a **deliberate vertical flip** — golback's `y` increases
+northward while macrocell rows count downward, so macrocell `sw`/`se` become
+golback's northern children. Get it backwards and the pattern is merely upside
+down, which still looks like a plausible Life pattern and evolves into something
+else. Both load paths are therefore compared directly, before and after
+stepping.
+
+### On garbage collection
+
+golback's arena never shrinks, so the obvious worry is that long runs exhaust
+memory. Measured on the 128M-cell metapixel, in wasm:
+
+| generations | nodes | heap |
+|---|---|---|
+| 1M | 2.5M | 342 MB |
+| 10M | 7.4M | 1,299 MB |
+| 100M | 13.8M | 1,299 MB |
+| 500M | 17.6M | 2,574 MB |
+
+**Growth is strongly sublinear** — memoisation keeps hitting subtrees it has
+already seen — and a chaotic soup is not the pathological case people expect: it
+*settles*, after which the node count plateaus and stepping becomes instant.
+
+So a collector is not what this corpus needs. Instead there is a 14-million-node
+budget: stepping pauses, the UI says why, and Reset builds a fresh universe
+which frees the lot. A real mark-and-sweep would only matter for someone running
+a large pattern for hours.
 
 ### The payoff
 
@@ -266,16 +304,12 @@ what wasm cannot do. The Demonoid gives the same self-replication payoff at
   window should cut roughly a third of the work.
 - **SIMD.** `v128` doubles the lane count, but wasm's vector shifts are
   *per-lane*, so carrying a bit across the lane boundary needs a shuffle.
-- **Quadtree-native *loading*.** Rendering now walks the tree, but loading still
-  flattens to a cell list, which is the whole reason for the 8-million-cell
-  ceiling. Building the quadtree directly from our macrocell DAG — the two share
-  a structure, only the leaf size differs (8×8 vs golback's `k = log2(side)`) —
-  would remove it and let the 128M-cell metapixels load from ~5,500 nodes.
-  Whether they'd then *run* is a separate question: advancing creates new nodes
-  every step and `golback` never reclaims any.
-- **Garbage collection.** `nodes: Vec<Node>` only grows. Our corpus is periodic
-  and heavily shared enough not to care, but a chaotic pattern run long enough
-  will exhaust memory. Mark-and-sweep from the root plus cache invalidation.
-- **The oversized RLE patterns.** 26 of them are still catalogued as
-  `too-large`; routing those through HashLife too is mostly plumbing.
+- **The oversized RLE patterns.** 26 are still catalogued as `too-large` —
+  routing them through HashLife is mostly plumbing now that it can hold anything.
+- **Garbage collection**, if you ever want to run a large pattern for hours.
+  Measured as unnecessary for this corpus (above), so it is a real
+  mark-and-sweep-from-the-root job rather than a fire to put out.
+- **StreamLife.** `gol_engines` implements it, and it is the better algorithm for
+  patterns dominated by glider streams. Blocked on tokio, but the patch to gate
+  it behind a feature is six lines and verified to compile for wasm.
 - **Thumbnails** in the browser list, rendered by the indexer.
