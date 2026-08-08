@@ -1,0 +1,16 @@
+[package]
+name = "golback"
+version = "0.3.4"
+edition = "2024"
+description = "A high-performance quadtree-based backend for Conway's Game of Life"
+license = "MIT"
+homepage = "https://github.com/favalosdev/golback"
+repository = "https://github.com/favalosdev/golback"
+documentation = "https://docs.rs/golback"
+authors = ["Fernando Avalos"]
+
+[dependencies]
+ca-formats = "0.3.5"
+literal = "0.2.0"
+rustc-hash = "2.1.1"
+trait-aliases = "0.3.0"
