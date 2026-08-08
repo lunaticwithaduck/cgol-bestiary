@@ -1,0 +1,26 @@
+[package]
+name = "conway"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# HashLife backend for the macrocell patterns. MIT, pure Rust, and it compiles
+# to wasm32-unknown-unknown unmodified — which gol_engines does not, because
+# tokio's rt-multi-thread is unsupported there and is a mandatory dependency.
+golback = "0.3"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+
+# Used only by build.sh. `panic = "abort"` cannot live in the release profile:
+# cargo ignores it for the test harness itself but not for the library it links
+# against, so `cargo test --release` fails on the strategy mismatch.
+[profile.wasm]
+inherits = "release"
+panic = "abort"
+strip = true

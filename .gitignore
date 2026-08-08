@@ -1,0 +1,8 @@
+/target
+/www/conway.wasm
+/www/patterns/
+/www/patterns-mc/
+/www/catalog.json
+/.patterns-src/
+/.patterns-mc-src/
+.claude/settings.local.json

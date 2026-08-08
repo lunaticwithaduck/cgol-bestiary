@@ -1,0 +1,688 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>conway — a stage for the LifeWiki pattern collection</title>
+<style>
+  :root {
+    --bg: #0b0e14;
+    --panel: #11151d;
+    --sunk: #0d1117;
+    --line: #212836;
+    --line2: #2c3546;
+    --text: #c9d3e0;
+    --dim: #6b7889;
+    --dimmer: #4a5666;
+    --accent: #7ee787;
+    --accent-dim: #2b5c3a;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 13px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  header {
+    display: flex; align-items: center; gap: 16px;
+    padding: 10px 16px;
+    border-bottom: 1px solid var(--line);
+    background: var(--panel);
+    flex: none;
+  }
+  h1 { font-size: 14px; margin: 0; font-weight: 600; white-space: nowrap; }
+  h1 span { color: var(--accent); }
+  .sub { color: var(--dim); font-size: 11px; white-space: nowrap; }
+  #layout { flex: 1; display: flex; min-height: 0; }
+
+  /* ---- browser rail ---- */
+  #rail {
+    width: 330px; flex: none;
+    border-right: 1px solid var(--line);
+    background: var(--panel);
+    display: flex; flex-direction: column; min-height: 0;
+  }
+  .railtop { padding: 10px; border-bottom: 1px solid var(--line); display: flex; flex-direction: column; gap: 8px; }
+  input[type=search], select {
+    width: 100%; background: var(--sunk); color: var(--text);
+    border: 1px solid var(--line2); border-radius: 5px;
+    padding: 7px 9px; font: inherit;
+  }
+  input[type=search]:focus, select:focus { outline: none; border-color: var(--accent-dim); }
+  .chips { display: flex; flex-wrap: wrap; gap: 5px; }
+  .chip {
+    border: 1px solid var(--line2); background: transparent; color: var(--dim);
+    border-radius: 999px; padding: 3px 9px; font: inherit; font-size: 11px; cursor: pointer;
+  }
+  .chip:hover { color: var(--text); border-color: #3a4557; }
+  .chip[aria-pressed=true] { background: var(--accent-dim); border-color: var(--accent-dim); color: #d5f5dd; }
+  .chip b { font-weight: 500; opacity: .6; margin-left: 4px; }
+
+  #list { flex: 1; overflow-y: auto; overscroll-behavior: contain; }
+  .row {
+    padding: 7px 10px; border-bottom: 1px solid #171d27; cursor: pointer;
+    content-visibility: auto; contain-intrinsic-size: auto 44px;
+  }
+  .row:hover { background: #161c26; }
+  .row[aria-selected=true] { background: var(--accent-dim); }
+  .row[aria-selected=true] .meta { color: #a9d8b6; }
+  .rname { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .meta { color: var(--dim); font-size: 11px; display: flex; gap: 8px; flex-wrap: wrap; }
+  .count { padding: 7px 10px; color: var(--dimmer); font-size: 11px; border-bottom: 1px solid var(--line); }
+
+  /* ---- stage ---- */
+  #stage { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+  #viewport { flex: 1; position: relative; min-height: 0; background: #07090d; }
+  canvas { display: block; width: 100%; height: 100%; image-rendering: pixelated; cursor: grab; }
+  canvas.dragging { cursor: grabbing; }
+  #hud {
+    position: absolute; left: 12px; top: 12px;
+    background: #0b0e14cc; border: 1px solid var(--line); border-radius: 6px;
+    padding: 8px 11px; font-size: 11px; pointer-events: none;
+    display: grid; grid-template-columns: auto auto; gap: 2px 12px;
+  }
+  #hud b { font-weight: 500; color: var(--text); font-variant-numeric: tabular-nums; text-align: right; }
+  #hud span { color: var(--dim); }
+
+  .bar {
+    flex: none; display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+    padding: 8px 12px; border-top: 1px solid var(--line); background: var(--panel);
+  }
+  button {
+    background: #1a202b; color: var(--text); border: 1px solid var(--line2);
+    border-radius: 5px; padding: 6px 11px; font: inherit; cursor: pointer;
+  }
+  button:hover { background: #222a37; border-color: #3a4557; }
+  button.primary { background: var(--accent); color: #06210f; border-color: var(--accent); font-weight: 600; min-width: 72px; }
+  button:disabled { opacity: .4; cursor: default; }
+  .bar label { color: var(--dim); font-size: 11px; display: flex; align-items: center; gap: 6px; }
+  input[type=range] { accent-color: var(--accent); width: 110px; }
+  .spacer { flex: 1; }
+
+  #detail {
+    flex: none; max-height: 30vh; overflow-y: auto;
+    border-top: 1px solid var(--line); background: var(--panel); padding: 12px 14px;
+  }
+  #detail h2 { font-size: 14px; margin: 0 0 2px; font-weight: 600; }
+  #detail .author { color: var(--dim); font-size: 11px; margin-bottom: 8px; }
+  .props { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+  .prop {
+    border: 1px solid var(--line2); border-radius: 4px; padding: 2px 8px; font-size: 11px; color: var(--dim);
+  }
+  .prop b { color: var(--accent); font-weight: 500; }
+  #detail p { margin: 0 0 4px; color: var(--dim); font-size: 11.5px; max-width: 80ch; }
+  .measured { color: var(--dimmer); font-size: 10.5px; margin-top: 6px; }
+
+  #error {
+    margin: 24px; padding: 16px; border: 1px solid #5a2a2a; background: #1e1315;
+    border-radius: 6px; color: #ff9b9b; white-space: pre-wrap; font-size: 12px;
+  }
+  @media (max-width: 820px) { #rail { width: 240px; } }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>conway<span>//</span>wasm</h1>
+  <span class="sub">bit-parallel Life &middot; every property below was measured by running the pattern</span>
+</header>
+
+<div id="layout">
+  <aside id="rail">
+    <div class="railtop">
+      <input type="search" id="q" placeholder="search 2,300 patterns…" autocomplete="off" spellcheck="false">
+      <div class="chips" id="cats"></div>
+      <select id="sort">
+        <option value="name">sort: name</option>
+        <option value="pop">sort: population</option>
+        <option value="period">sort: period</option>
+        <option value="size">sort: bounding box</option>
+      </select>
+    </div>
+    <div class="count" id="count">loading…</div>
+    <div id="list"></div>
+  </aside>
+
+  <main id="stage">
+    <div id="viewport">
+      <canvas id="screen"></canvas>
+      <div id="hud">
+        <span>generation</span><b id="hGen">0</b>
+        <span>population</span><b id="hPop">0</b>
+        <span>gens/sec</span><b id="hRate">0</b>
+        <span>zoom</span><b id="hZoom">1×</b>
+      </div>
+    </div>
+
+    <div class="bar">
+      <button id="play" class="primary">Play</button>
+      <button id="step">Step</button>
+      <button id="reset">Reset</button>
+      <label>speed <input type="range" id="speed" min="0" max="14" value="3"><b id="speedV">5/s</b></label>
+      <div class="spacer"></div>
+      <button id="zoomOut">−</button>
+      <button id="fit">Fit</button>
+      <button id="zoomIn">+</button>
+      <label><input type="checkbox" id="torus"> torus</label>
+      <span class="sub" id="engineTag">bitmap</span>
+    </div>
+
+    <div id="detail"><p>Pick a pattern from the list.</p></div>
+  </main>
+</div>
+
+<script type="module">
+const $ = id => document.getElementById(id);
+const fmt = n => Math.round(n).toLocaleString('en-US');
+
+function fatal(msg) {
+  document.body.innerHTML = '';
+  const p = document.createElement('pre');
+  p.id = 'error'; p.textContent = msg;
+  document.body.append(p);
+  throw new Error(msg);
+}
+
+// A throw inside requestAnimationFrame silently stops the loop forever, which
+// looks exactly like "the simulation is paused". Make it visible instead.
+function banner(msg) {
+  let el = document.getElementById('banner');
+  if (!el) {
+    el = document.createElement('pre');
+    el.id = 'banner';
+    el.style.cssText = 'position:fixed;left:0;right:0;bottom:0;z-index:9;margin:0;padding:10px 14px;' +
+      'background:#2a1416;color:#ff9b9b;border-top:1px solid #5a2a2a;font:12px ui-monospace,monospace;' +
+      'white-space:pre-wrap;max-height:40vh;overflow:auto';
+    document.body.append(el);
+  }
+  el.textContent = msg;
+}
+addEventListener('error', e => banner(`${e.message}\n  at ${e.filename}:${e.lineno}:${e.colno}`));
+addEventListener('unhandledrejection', e => banner(`Unhandled rejection: ${e.reason?.stack || e.reason}`));
+
+/* ---------- load wasm + catalogue ---------- */
+
+let wasm, catalog;
+try {
+  const [mod, cat] = await Promise.all([
+    WebAssembly.instantiateStreaming(fetch('conway.wasm'), {}),
+    fetch('catalog.json').then(r => r.ok ? r.json() : Promise.reject(new Error(`catalog.json → HTTP ${r.status}`))),
+  ]);
+  wasm = mod.instance.exports;
+  catalog = cat;
+} catch (err) {
+  fatal(`Could not start.\n\n${err}\n\n` +
+        `Expected www/conway.wasm and www/catalog.json. Build them with:\n` +
+        `  ./build.sh\n  ./fetch-patterns.sh\n  cargo run --release --bin index\n\n` +
+        `Then serve over HTTP (python3 -m http.server 8080 --directory www).`);
+}
+
+const TORUS = 0, DEAD = 1;
+const canvas = $('screen');
+const ctx = canvas.getContext('2d', { alpha: false });
+
+let world = wasm.conway_new(512, 512, DEAD);
+const hlWorld = wasm.conway_hl_new();
+// Which backend is driving the stage: the bit-parallel bitmap engine, or
+// HashLife for patterns whose universe is far too large to rasterise.
+let engine = 'bitmap';
+let current = null;      // catalogue entry
+let currentRle = null;   // source text, so Reset is exact
+let cam = { x: 0, y: 0, scale: 4 };
+let boundary = DEAD;
+
+// Generations per *second*, decoupled from frame rate — at one step per frame
+// the default would be whatever the display happens to run at, which is far
+// too fast to actually watch a pattern work.
+const RATES = [1, 2, 3, 5, 10, 15, 30, 60, 120, 250, 500, 1000, 2500, 5000, 10000];
+let running = false, rate = RATES[3], carry = 0;
+
+/* ---------- catalogue UI ---------- */
+
+const LABEL = {
+  'still-life': 'still life', 'oscillator': 'oscillator', 'spaceship': 'spaceship',
+  'methuselah': 'methuselah', 'settles': 'settles', 'infinite-growth': 'infinite growth',
+  'dies': 'dies out', 'macrocell': 'macrocell', 'too-large': 'too large',
+  'unresolved': 'unresolved',
+};
+const ORDER = ['spaceship', 'oscillator', 'still-life', 'infinite-growth', 'methuselah',
+               'settles', 'macrocell', 'dies', 'too-large', 'unresolved'];
+
+const counts = {};
+for (const p of catalog.patterns) counts[p.category] = (counts[p.category] || 0) + 1;
+
+let active = new Set();
+const cats = $('cats');
+for (const c of ORDER.filter(c => counts[c])) {
+  const b = document.createElement('button');
+  b.className = 'chip';
+  b.type = 'button';
+  b.setAttribute('aria-pressed', 'false');
+  b.innerHTML = `${LABEL[c]}<b>${counts[c]}</b>`;
+  b.onclick = () => {
+    active.has(c) ? active.delete(c) : active.add(c);
+    b.setAttribute('aria-pressed', String(active.has(c)));
+    render();
+  };
+  cats.append(b);
+}
+
+const label = p => p.name || p.file.replace(/\.rle$/, '');
+const haystack = p => (`${p.name || ''} ${p.file} ${p.author || ''} ${p.comments.join(' ')}`).toLowerCase();
+for (const p of catalog.patterns) p._h = haystack(p);
+
+function summary(p) {
+  if (p.format === 'macrocell')
+    return ['macrocell', `${fmt(p.pop)} cells`, `2^${p.level} universe`, `${fmt(p.nodes)} nodes`];
+  const bits = [LABEL[p.category] || p.category];
+  if (p.speed) bits.push(p.speed);
+  else if (p.period > 1) bits.push(`p${p.period}`);
+  if (p.settlesAt) bits.push(`@${fmt(p.settlesAt)}`);
+  bits.push(`${p.w}×${p.h}`);
+  bits.push(`${fmt(p.pop)} cells`);
+  return bits;
+}
+
+const list = $('list');
+let filtered = [];
+
+function render() {
+  const q = $('q').value.trim().toLowerCase();
+  const terms = q ? q.split(/\s+/) : [];
+  filtered = catalog.patterns.filter(p =>
+    (active.size === 0 || active.has(p.category)) &&
+    terms.every(t => p._h.includes(t)));
+
+  const by = $('sort').value;
+  const key = {
+    name: p => label(p).toLowerCase(),
+    pop: p => -p.pop,
+    period: p => p.period == null ? Infinity : p.period,
+    size: p => -(p.w * p.h),
+  }[by];
+  filtered.sort((a, b) => {
+    const ka = key(a), kb = key(b);
+    return ka < kb ? -1 : ka > kb ? 1 : label(a).localeCompare(label(b));
+  });
+
+  $('count').textContent =
+    `${fmt(filtered.length)} of ${fmt(catalog.patterns.length)} patterns`;
+
+  const frag = document.createDocumentFragment();
+  for (const p of filtered) {
+    const row = document.createElement('div');
+    row.className = 'row';
+    row.setAttribute('role', 'option');
+    row.setAttribute('aria-selected', String(current === p));
+    const n = document.createElement('b');
+    n.className = 'rname';
+    n.textContent = label(p);
+    const m = document.createElement('div');
+    m.className = 'meta';
+    for (const s of summary(p)) {
+      const el = document.createElement('span');
+      el.textContent = s;
+      m.append(el);
+    }
+    row.append(n, m);
+    row.onclick = () => load(p);
+    frag.append(row);
+  }
+  list.replaceChildren(frag);
+}
+
+$('q').oninput = render;
+$('sort').onchange = render;
+
+/* ---------- loading a pattern ---------- */
+
+const MARGIN = 280, MAX_GRID = 4096;
+
+function setRunnable(on) {
+  for (const id of ['play', 'step', 'reset']) $(id).disabled = !on;
+  if (!on) { running = false; $('play').textContent = 'Play'; }
+}
+
+async function load(p) {
+  current = p;
+  for (const [i, row] of [...list.children].entries())
+    row.setAttribute('aria-selected', String(filtered[i] === p));
+
+  // Macrocell patterns describe universes far too large to rasterise, so they
+  // run on HashLife instead of the bitmap engine.
+  if (p.format === 'macrocell') {
+    currentRle = null;
+    engine = 'hashlife';
+    let src;
+    try {
+      const r = await fetch(`patterns-mc/${p.file}`);
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      src = await r.text();
+    } catch (err) {
+      setRunnable(false);
+      detail(p, `Could not fetch patterns-mc/${p.file}: ${err.message}`);
+      return;
+    }
+    const bytes = new TextEncoder().encode(src);
+    const cap = wasm.conway_hl_scratch_cap();
+    if (bytes.length > cap) {
+      setRunnable(false);
+      detail(p, `Pattern file is larger than the ${fmt(cap)}-byte scratch buffer.`);
+      return;
+    }
+    new Uint8Array(wasm.memory.buffer, wasm.conway_hl_scratch_ptr(hlWorld), cap).set(bytes);
+    const code = wasm.conway_hl_load(hlWorld, bytes.length);
+    if (code !== 1) {
+      setRunnable(false);
+      const why = {
+        0: 'The macrocell parser rejected this file.',
+        2: 'This pattern is not Conway’s rule.',
+        3: `Loading needs every cell as a coordinate pair, and ${fmt(p.pop)} of them ` +
+           `would not fit in a wasm heap — the ceiling is ${fmt(wasm.conway_hl_max_cells())}. ` +
+           `HashLife itself is fine with it; getting it in through golback’s flat-list API is not.`,
+      }[code] || 'Load failed.';
+      detail(p, why);
+      return;
+    }
+    setRunnable(true);
+    detail(p);
+    fitView();
+    running = true;
+    $('play').textContent = 'Pause';
+    return;
+  }
+
+  engine = 'bitmap';
+  setRunnable(true);
+
+  let text;
+  try {
+    const r = await fetch(`patterns/${p.file}`);
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    text = await r.text();
+  } catch (err) {
+    detail(p, `Could not fetch patterns/${p.file}: ${err.message}`);
+    return;
+  }
+  currentRle = text;
+  stamp();
+  detail(p);
+  fitView();
+  running = true;
+  $('play').textContent = 'Pause';
+}
+
+function stamp() {
+  const p = current;
+  // Growers need somewhere to grow; a still life needs almost nothing.
+  const pad = p.category === 'infinite-growth' ? MARGIN * 2 : MARGIN;
+  const gw = Math.min(MAX_GRID, Math.max(256, p.w + 2 * pad));
+  const gh = Math.min(MAX_GRID, Math.max(256, p.h + 2 * pad));
+  wasm.conway_resize(world, gw, gh, boundary);
+
+  const bytes = new TextEncoder().encode(currentRle);
+  const cap = wasm.conway_scratch_cap();
+  if (bytes.length > cap) { detail(p, `Pattern is larger than the ${fmt(cap)}-byte scratch buffer.`); return; }
+  new Uint8Array(wasm.memory.buffer, wasm.conway_scratch_ptr(world), cap).set(bytes);
+  if (!wasm.conway_load_rle(world, bytes.length)) detail(p, 'The wasm parser rejected this file.');
+}
+
+function detail(p, error) {
+  const d = $('detail');
+  d.replaceChildren();
+  const h = document.createElement('h2');
+  h.textContent = label(p);
+  d.append(h);
+
+  if (p.author) {
+    const a = document.createElement('div');
+    a.className = 'author';
+    a.textContent = p.author;
+    d.append(a);
+  }
+
+  const props = document.createElement('div');
+  props.className = 'props';
+  const add = (k, v) => {
+    if (v == null || v === '') return;
+    const el = document.createElement('span');
+    el.className = 'prop';
+    el.innerHTML = `${k} <b>${v}</b>`;
+    props.append(el);
+  };
+  add('class', LABEL[p.category] || p.category);
+  if (p.speed) add('speed', p.speed);
+  if (p.period != null && p.period > 1) add('period', fmt(p.period));
+  if (p.settlesAt != null) add('stabilises at', fmt(p.settlesAt));
+  if (p.diesAt != null) add('dies at', fmt(p.diesAt));
+  add('cells', fmt(p.pop));
+  add('bounding box', `${fmt(p.w)}×${fmt(p.h)}`);
+  if (p.format === 'macrocell') {
+    add('universe', `2^${p.level} square`);
+    add('quadtree nodes', fmt(p.nodes));
+  } else if (p.maxPop > p.pop) {
+    add('peak population', fmt(p.maxPop));
+  }
+  d.append(props);
+
+  if (p.format === 'macrocell') {
+    const note = document.createElement('p');
+    note.style.color = '#e3b341';
+    note.textContent =
+      `${fmt(p.pop)} live cells across a 2^${p.level} universe, stored as ${fmt(p.nodes)} shared ` +
+      `quadtree nodes — population and bounding box were measured structurally from that DAG, ` +
+      `without ever expanding the cells. Running on HashLife, which advances by shared subtrees ` +
+      `rather than cell by cell.`;
+    d.append(note);
+  }
+
+  if (error) {
+    const e = document.createElement('p');
+    e.style.color = '#ff9b9b';
+    e.textContent = error;
+    d.append(e);
+  }
+  for (const c of p.comments) {
+    const el = document.createElement('p');
+    el.textContent = c;
+    d.append(el);
+  }
+  const m = document.createElement('div');
+  m.className = 'measured';
+  m.textContent =
+    p.format === 'macrocell'
+      ? `Macrocell quadtree, not simulated. Source: ${p.file}`
+    : p.category === 'too-large'
+      ? `Not simulated — bounding box exceeds the analyser's grid cap. Source: ${p.file}`
+      : `Measured over ${fmt(p.gens)} generations${p.reachedEdge ? ', stopped at the edge of the analysis box' : ''}. Source: ${p.file}`;
+  d.append(m);
+}
+
+/* ---------- camera ---------- */
+
+const cellsPerPixel = s => s > 0 ? 1 / s : -s;
+
+/// Bounding box of whatever is currently on the stage, in cell coordinates.
+function contentBox() {
+  if (engine === 'hashlife') {
+    const x0 = wasm.conway_hl_min_x(hlWorld), y0 = wasm.conway_hl_min_y(hlWorld);
+    return [x0, y0, wasm.conway_hl_max_x(hlWorld) - x0 + 1, wasm.conway_hl_max_y(hlWorld) - y0 + 1];
+  }
+  return [wasm.conway_stamp_x(world), wasm.conway_stamp_y(world),
+          wasm.conway_stamp_w(world), wasm.conway_stamp_h(world)];
+}
+
+function fitView() {
+  const [x, y, w0, h0] = contentBox();
+  const pw = Math.max(1, w0), ph = Math.max(1, h0);
+  const s = Math.min(canvas.width * 0.8 / pw, canvas.height * 0.8 / ph);
+  // A 272,449-wide Demonoid needs to zoom out much further than a glider.
+  cam.scale = s >= 1 ? Math.min(32, Math.floor(s)) : -Math.min(65536, Math.ceil(1 / s));
+  centreOn(x + pw / 2, y + ph / 2);
+}
+
+function centreOn(cx, cy) {
+  const k = cellsPerPixel(cam.scale);
+  cam.x = Math.round(cx - canvas.width / 2 * k);
+  cam.y = Math.round(cy - canvas.height / 2 * k);
+}
+
+function zoomBy(dir, ax, ay) {
+  // Keep the cell under (ax, ay) put while the scale changes.
+  const k0 = cellsPerPixel(cam.scale);
+  const cellX = cam.x + ax * k0, cellY = cam.y + ay * k0;
+  let s = cam.scale;
+  s = dir > 0 ? (s >= -1 ? Math.min(32, s + 1) : s + 1) : (s > 1 ? s - 1 : Math.max(-64, s === 1 ? -2 : s - 1));
+  if (s === 0 || s === -1) s = dir > 0 ? 1 : -2;
+  cam.scale = s;
+  const k1 = cellsPerPixel(cam.scale);
+  cam.x = Math.round(cellX - ax * k1);
+  cam.y = Math.round(cellY - ay * k1);
+}
+
+/* ---------- frame loop ---------- */
+
+let view = null, viewBuf = null, viewLen = -1;
+
+function paint() {
+  const ptr = engine === 'hashlife'
+    ? wasm.conway_hl_render_view(hlWorld, cam.x, cam.y, cam.scale, canvas.width, canvas.height)
+    : wasm.conway_render_view(world, cam.x, cam.y, cam.scale, canvas.width, canvas.height);
+  const len = engine === 'hashlife'
+    ? wasm.conway_hl_render_len(hlWorld)
+    : wasm.conway_render_len(world);
+  // Any allocation can grow linear memory, which detaches every view onto it.
+  if (viewBuf !== wasm.memory.buffer || viewLen !== len) {
+    viewBuf = wasm.memory.buffer;
+    viewLen = len;
+    view = new Uint8ClampedArray(viewBuf, ptr, len);
+  }
+  ctx.putImageData(new ImageData(view, canvas.width, canvas.height), 0, 0);
+}
+
+let acc = 0, accGens = 0, last = performance.now();
+
+function frame(now) {
+  // Clamped so a backgrounded tab doesn't come back and surge thousands of
+  // generations in one frame.
+  const dt = Math.min(0.25, (now - last) / 1000);
+  last = now;
+
+  const live = engine === 'hashlife' ? current?.format === 'macrocell' : !!currentRle;
+  if (running && live) {
+    carry += dt * rate;
+    const whole = Math.floor(carry);
+    carry -= whole;
+    const steps = Math.min(whole, 20000); // anything beyond this is dropped, not banked
+    if (steps > 0) {
+      if (engine === 'hashlife') wasm.conway_hl_step(hlWorld, steps);
+      else wasm.conway_step(world, steps);
+      accGens += steps;
+    }
+  }
+  paint();
+
+  acc += dt * 1000;
+  if (acc >= 400) {
+    $('hRate').textContent = fmt(accGens * 1000 / acc);
+    acc = 0; accGens = 0;
+  }
+  const hl = engine === 'hashlife';
+  // The torus toggle is a property of a fixed grid; HashLife is unbounded.
+  $('torus').disabled = hl;
+  const clipped = hl && wasm.conway_hl_clipped(hlWorld) === 1;
+  $('engineTag').textContent = clipped
+    ? `hashlife · stopped: pattern reached the edge of its 2^${wasm.conway_hl_level(hlWorld)} universe`
+    : hl ? `hashlife · 2^${wasm.conway_hl_level(hlWorld)} universe` : 'bitmap';
+  $('engineTag').style.color = clipped ? '#e3b341' : '';
+  $('hGen').textContent = fmt(hl ? wasm.conway_hl_generation(hlWorld) : wasm.conway_generation(world));
+  $('hPop').textContent = fmt(hl ? wasm.conway_hl_population(hlWorld) : wasm.conway_population(world));
+  $('hZoom').textContent = cam.scale > 0 ? `${cam.scale}×` : `1/${fmt(-cam.scale)}`;
+  requestAnimationFrame(frame);
+}
+
+/* ---------- controls ---------- */
+
+$('play').onclick = () => {
+  running = !running;
+  $('play').textContent = running ? 'Pause' : 'Play';
+  last = performance.now(); acc = 0; accGens = 0; carry = 0;
+};
+$('step').onclick = () => {
+  running = false; $('play').textContent = 'Play'; carry = 0;
+  wasm.conway_step(world, 1);
+};
+$('reset').onclick = () => {
+  carry = 0;
+  if (engine === 'hashlife') { if (current) load(current); }
+  else if (currentRle) { stamp(); fitView(); }
+};
+$('speed').oninput = e => {
+  rate = RATES[+e.target.value];
+  $('speedV').textContent = rate >= 1000 ? `${rate / 1000}k/s` : `${rate}/s`;
+  carry = 0;
+};
+$('zoomIn').onclick = () => zoomBy(+1, canvas.width / 2, canvas.height / 2);
+$('zoomOut').onclick = () => zoomBy(-1, canvas.width / 2, canvas.height / 2);
+$('fit').onclick = fitView;
+$('torus').onchange = e => {
+  boundary = e.target.checked ? TORUS : DEAD;
+  if (currentRle) { stamp(); fitView(); }
+};
+
+canvas.addEventListener('wheel', e => {
+  e.preventDefault();
+  const r = canvas.getBoundingClientRect();
+  zoomBy(e.deltaY < 0 ? +1 : -1, e.clientX - r.left, e.clientY - r.top);
+}, { passive: false });
+
+let drag = null;
+canvas.addEventListener('pointerdown', e => {
+  drag = { x: e.clientX, y: e.clientY };
+  canvas.setPointerCapture(e.pointerId);
+  canvas.classList.add('dragging');
+});
+canvas.addEventListener('pointermove', e => {
+  if (!drag) return;
+  const k = cellsPerPixel(cam.scale);
+  cam.x -= Math.round((e.clientX - drag.x) * k);
+  cam.y -= Math.round((e.clientY - drag.y) * k);
+  drag = { x: e.clientX, y: e.clientY };
+});
+for (const ev of ['pointerup', 'pointercancel'])
+  canvas.addEventListener(ev, () => { drag = null; canvas.classList.remove('dragging'); });
+
+addEventListener('keydown', e => {
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
+  const pan = 40 * cellsPerPixel(cam.scale);
+  const moves = { ArrowLeft: [-pan, 0], ArrowRight: [pan, 0], ArrowUp: [0, -pan], ArrowDown: [0, pan] };
+  if (e.key === ' ') { e.preventDefault(); $('play').click(); }
+  else if (e.key === 'f') fitView();
+  else if (e.key === '+' || e.key === '=') zoomBy(+1, canvas.width / 2, canvas.height / 2);
+  else if (e.key === '-') zoomBy(-1, canvas.width / 2, canvas.height / 2);
+  else if (moves[e.key]) { const [dx, dy] = moves[e.key]; cam.x += Math.round(dx); cam.y += Math.round(dy); }
+});
+
+/* ---------- sizing ---------- */
+
+new ResizeObserver(() => {
+  const r = $('viewport').getBoundingClientRect();
+  const w = Math.max(1, Math.floor(r.width)), h = Math.max(1, Math.floor(r.height));
+  if (w !== canvas.width || h !== canvas.height) {
+    canvas.width = w; canvas.height = h;
+  }
+}).observe($('viewport'));
+
+/* ---------- go ---------- */
+render();
+const first = catalog.patterns.find(p => /gosper/i.test(p.name || p.file)) || catalog.patterns[0];
+await load(first);
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
