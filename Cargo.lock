@@ -44,8 +44,6 @@ dependencies = [
 [[package]]
 name = "golback"
 version = "0.3.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "85a162877c9915ebc0d74bacd384bd36490afa72d3d994608bf9478efea6d2aa"
 dependencies = [
  "ca-formats",
  "literal",

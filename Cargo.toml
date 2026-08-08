@@ -7,10 +7,14 @@ edition = "2021"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-# HashLife backend for the macrocell patterns. MIT, pure Rust, and it compiles
-# to wasm32-unknown-unknown unmodified — which gol_engines does not, because
-# tokio's rt-multi-thread is unsupported there and is a mandatory dependency.
-golback = "0.3"
+# HashLife backend for the macrocell patterns. Vendored rather than taken from
+# crates.io because the integration needs the quadtree itself, which upstream
+# keeps private — see vendor/golback/VENDORED.md.
+#
+# gol_engines implements the better algorithm (StreamLife) but cannot be used
+# here: tokio's rt-multi-thread is a mandatory dependency and is unsupported on
+# wasm32-unknown-unknown.
+golback = { path = "vendor/golback" }
 
 [profile.release]
 opt-level = 3
