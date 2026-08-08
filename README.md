@@ -37,43 +37,64 @@ The bitmap engine is unbeatable on small dense patterns and useless on a
 universe 2^25 cells square. HashLife is the reverse. The catalogue records
 which backend each pattern needs and the stage switches between them.
 
-HashLife comes from [`golback`](https://github.com/favalosdev/golback) (MIT)
-rather than being hand-written. The alternative, `gol_engines`, implements
-StreamLife and is the better algorithm — but it depends unconditionally on
-tokio with `rt-multi-thread`, which **does not compile to
-`wasm32-unknown-unknown`**. It can be made to, by marking tokio optional and
-putting `mod quadtree_async` behind a feature (tokio is confined to three
-files), but that means carrying a patch. `golback` compiles to wasm untouched.
+HashLife comes from [`golback`](https://github.com/favalosdev/golback) (MIT),
+**vendored under `vendor/golback/`** — see `vendor/golback/VENDORED.md`. It is
+committed pristine in one commit and modified in later ones, so `git log` on
+that directory is exactly the diff against upstream.
 
-Two properties of its API shape `src/hashlife.rs`:
+The alternative, `gol_engines`, implements StreamLife and is the better
+algorithm — but it depends unconditionally on tokio with `rt-multi-thread`,
+which **does not compile to `wasm32-unknown-unknown`**. It can be made to, by
+marking tokio optional and putting `mod quadtree_async` behind a feature (tokio
+is confined to three files), but that means carrying a patch on a crate we'd
+otherwise take unmodified.
 
-- **Both the way in and the way out are flat cell lists.** `from_coords` wants
-  every coordinate and `to_coords` returns every coordinate, so both cost
-  population rather than node count. Hence a ceiling of 8 million cells:
-  `metapixel-parity64` would need **1.6GB** just for the input vector, and 14.6
-  seconds to build. 23 of the 25 patterns fit; the two 100M-cell metapixels are
-  refused with an explanation.
-- **`is_alive` is far too slow to render with** — about 290ms per megapixel,
-  roughly 7fps on our viewport. So rendering rasterises a cached cell list
-  instead: O(pixels) to clear plus O(population) to plot, refreshed only when
-  the universe actually advances.
+### What we added upstream
 
-**The universe does not grow itself.** This one bit hard. Sized to the
-pattern's bounding box plus a little, a glider travels 128 cells and then
-decays against the wall into a 2×2 block — silently, with no error. An
-undersized Gosper gun reports 564 cells where the truth is 11,144. Since empty
-quadtree nodes are shared, an oversized universe costs almost nothing, so
-patterns now get a minimum of 2^22 and six levels of headroom. Drift is also
-tracked, and stepping *stops* once the pattern could be losing cells off the
-edge — the same principle the analyser uses, for the same reason: an artefact
-of the box is worse than nothing.
+**`visit_region`** — walk the tree, descending only into nodes that intersect
+the viewport and stopping below a pixel. Rendering now costs *visible node
+count*. The public alternatives were `to_coords`, which materialises every live
+cell, and `is_alive` at ~290ms per megapixel — about 7fps on our viewport.
 
-The payoff is `demonoid-c512-hashlife-friendly.mc`, a self-replicating
-spaceship. Advance it 2,097,152 generations and it has built a complete copy of
-itself, displaced exactly 4096 cells diagonally, at identical population —
-precisely what the pattern's own header documents. That is 2 million
-generations across a 272,449 × 268,312 region; for the bitmap engine it is not
-a slow computation but an impossible one.
+**`bounds`** — the bounding box from a walk memoised per node, so it costs
+*distinct node count*. A node's box relative to its own corner doesn't depend
+on where the node sits, which is what makes memoising across a shared DAG
+sound; without it a walk revisits shared subtrees once per path through them.
+
+Between them, nothing on the hot path costs population any more — population
+itself is just the root node's count.
+
+Exact rendering needs two constraints: cells-per-pixel rounded down to a power
+of two, and the camera snapped to a multiple of it. Quadtree nodes are
+power-of-two sized and aligned, so otherwise a node straddles two pixels and
+the walk cannot say which to light.
+
+**`ensure_room_for`** — the nastiest bug in this codebase. `centre()` already
+wraps a node in one a level larger, but `advance_aux` immediately undoes that
+with `successor()`, so the level never rose. A travelling pattern reached the
+boundary and **decayed against it in silence**: a glider in a universe sized to
+its own 3×3 box became a 2×2 block after 128 cells, and an undersized Gosper
+gun reported 564 cells against a true 11,144. Growth now happens before
+stepping, until the cells sit inside the central quarter and one `successor`
+can span the jump. A glider runs 8,000,000 generations and travels exactly
+2,000,000 cells with its population intact. The only real limit left is `i64`
+coordinates at level 60, reported rather than allowed to corrupt anything.
+
+### What still costs population
+
+Loading. `from_coords` wants every coordinate, so `MAX_CELLS` stands at 8
+million: `metapixel-parity64` would need **1.6GB** of pairs and 14.6 seconds to
+load a pattern its own file describes in 5,572 nodes. 23 of the 25 fit; the two
+100M-cell metapixels are refused with an explanation rather than an OOM.
+
+### The payoff
+
+`demonoid-c512-hashlife-friendly.mc`, a self-replicating spaceship. Advance it
+2,097,152 generations and it has built a complete copy of itself, displaced
+exactly 4096 cells diagonally at identical population — precisely what the
+pattern's own header documents. That is 2 million generations across a
+272,449 × 268,312 region; for the bitmap engine it is not a slow computation
+but an impossible one.
 
 ## The engine
 
@@ -245,13 +266,16 @@ what wasm cannot do. The Demonoid gives the same self-replication payoff at
   window should cut roughly a third of the work.
 - **SIMD.** `v128` doubles the lane count, but wasm's vector shifts are
   *per-lane*, so carrying a bit across the lane boundary needs a shuffle.
-- **Quadtree-native rendering and loading.** Both ends of the HashLife
-  integration currently go through flat cell lists, which is what imposes the
-  8-million-cell ceiling. Descending the quadtree straight into the viewport —
-  pruning empty and sub-pixel nodes — and building the tree directly from our
-  macrocell DAG would remove it entirely and let the 128M-cell metapixels run.
-  Both need node-level access that `golback` does not expose, so it means
-  forking it (MIT, ~1,000 lines) or writing our own engine.
+- **Quadtree-native *loading*.** Rendering now walks the tree, but loading still
+  flattens to a cell list, which is the whole reason for the 8-million-cell
+  ceiling. Building the quadtree directly from our macrocell DAG — the two share
+  a structure, only the leaf size differs (8×8 vs golback's `k = log2(side)`) —
+  would remove it and let the 128M-cell metapixels load from ~5,500 nodes.
+  Whether they'd then *run* is a separate question: advancing creates new nodes
+  every step and `golback` never reclaims any.
+- **Garbage collection.** `nodes: Vec<Node>` only grows. Our corpus is periodic
+  and heavily shared enough not to care, but a chaotic pattern run long enough
+  will exhaust memory. Mark-and-sweep from the root plus cache invalidation.
 - **The oversized RLE patterns.** 26 of them are still catalogued as
   `too-large`; routing those through HashLife too is mostly plumbing.
 - **Thumbnails** in the browser list, rendered by the indexer.
