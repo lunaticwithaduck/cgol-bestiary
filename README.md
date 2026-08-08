@@ -69,6 +69,16 @@ of two, and the camera snapped to a multiple of it. Quadtree nodes are
 power-of-two sized and aligned, so otherwise a node straddles two pixels and
 the walk cannot say which to light.
 
+Those constraints leak into the UI, which is why zoom is a **ladder** of
+power-of-two rungs rather than ±1 on a scale factor. Stepping to a scale of -3
+drew exactly the same picture as -2 — several presses appearing to do nothing —
+and because the renderer's snap offset changed at each level while the camera
+did not, the view jumped sideways by up to a full cells-per-pixel: two thousand
+cells at the zoom a metapixel is viewed at, which read as an uncontrollable pan.
+The camera is now snapped in the frontend by the same rule, with an unsnapped
+float underneath it so that when zoomed in — where one screen pixel is a
+fraction of a cell — small drags accumulate instead of rounding away.
+
 **`ensure_room_for`** — the nastiest bug in this codebase. `centre()` already
 wraps a node in one a level larger, but `advance_aux` immediately undoes that
 with `successor()`, so the level never rose. A travelling pattern reached the

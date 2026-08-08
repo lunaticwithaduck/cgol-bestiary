@@ -233,7 +233,12 @@ const hlWorld = wasm.conway_hl_new();
 let engine = 'bitmap';
 let current = null;      // catalogue entry
 let currentRle = null;   // source text, so Reset is exact
+// `cam` is what the renderer sees, snapped to the pixel grid; `camF` is the
+// unsnapped position underneath it. See setCam().
 let cam = { x: 0, y: 0, scale: 4 };
+let camF = { x: 0, y: 0 };
+/// Set once the user zooms or pans, so an automatic re-fit stops overriding them.
+let userAdjusted = false;
 let boundary = DEAD;
 
 // Generations per *second*, decoupled from frame rate — at one step per frame
@@ -504,7 +509,40 @@ function detail(p, error) {
 
 /* ---------- camera ---------- */
 
-const cellsPerPixel = s => s > 0 ? 1 / s : -s;
+// Zoom is a ladder rather than ±1 on the scale, and the zoomed-out rungs are
+// powers of two. That is a hard requirement, not a preference: the HashLife
+// renderer aligns quadtree nodes to pixels and rounds cells-per-pixel *down* to
+// a power of two, so a scale of -3 drew exactly the same picture as -2 and
+// several zoom presses in a row appeared to do nothing.
+const ZOOMS = [
+  ...Array.from({ length: 24 }, (_, i) => -(2 ** (24 - i))), // -16777216 … -2
+  1, 2, 3, 4, 6, 8, 12, 16, 24, 32,
+];
+const AT_1X = ZOOMS.indexOf(1);
+let zoomIndex = AT_1X;
+
+const cellsPerPixel = s => (s > 0 ? 1 / s : -s);
+/// The grid the camera must sit on: one cell when zoomed in, otherwise the
+/// cells-per-pixel ratio.
+const camGrid = s => (s > 0 ? 1 : -s);
+
+/// Move the camera, keeping it aligned to the pixel grid.
+///
+/// The renderer snaps the camera to a multiple of cells-per-pixel so quadtree
+/// nodes cannot straddle pixels. If JS lets it drift off that grid, the
+/// renderer's own snap changes by a different amount at each zoom level and the
+/// picture jumps sideways — up to 2,000 cells at the zoom a metapixel is viewed
+/// at. Snapping here too makes the renderer's snap a no-op.
+function setCam(x, y) {
+  // Keep the unsnapped position too, so that when zoomed in — where one screen
+  // pixel is a fraction of a cell — repeated small drags accumulate instead of
+  // each being rounded away to nothing.
+  camF.x = x;
+  camF.y = y;
+  const g = camGrid(cam.scale);
+  cam.x = Math.floor(x / g) * g;
+  cam.y = Math.floor(y / g) * g;
+}
 
 /// Bounding box of whatever is currently on the stage, in cell coordinates.
 function contentBox() {
@@ -519,29 +557,35 @@ function contentBox() {
 function fitView() {
   const [x, y, w0, h0] = contentBox();
   const pw = Math.max(1, w0), ph = Math.max(1, h0);
-  const s = Math.min(canvas.width * 0.8 / pw, canvas.height * 0.8 / ph);
-  // A 272,449-wide Demonoid needs to zoom out much further than a glider.
-  cam.scale = s >= 1 ? Math.min(32, Math.floor(s)) : -Math.min(65536, Math.ceil(1 / s));
+  // Cells per pixel needed to fit, with a little margin.
+  const need = Math.max(pw / (canvas.width * 0.85), ph / (canvas.height * 0.85));
+  // The most zoomed-in rung that still fits. Entries run from coarse to fine,
+  // so this keeps the last one that is coarse enough.
+  zoomIndex = 0;
+  for (let i = 0; i < ZOOMS.length; i++) {
+    if (cellsPerPixel(ZOOMS[i]) >= need) zoomIndex = i;
+  }
+  cam.scale = ZOOMS[zoomIndex];
   centreOn(x + pw / 2, y + ph / 2);
+  userAdjusted = false;
 }
 
 function centreOn(cx, cy) {
   const k = cellsPerPixel(cam.scale);
-  cam.x = Math.round(cx - canvas.width / 2 * k);
-  cam.y = Math.round(cy - canvas.height / 2 * k);
+  setCam(cx - canvas.width / 2 * k, cy - canvas.height / 2 * k);
 }
 
 function zoomBy(dir, ax, ay) {
-  // Keep the cell under (ax, ay) put while the scale changes.
-  const k0 = cellsPerPixel(cam.scale);
-  const cellX = cam.x + ax * k0, cellY = cam.y + ay * k0;
-  let s = cam.scale;
-  s = dir > 0 ? (s >= -1 ? Math.min(32, s + 1) : s + 1) : (s > 1 ? s - 1 : Math.max(-64, s === 1 ? -2 : s - 1));
-  if (s === 0 || s === -1) s = dir > 0 ? 1 : -2;
-  cam.scale = s;
-  const k1 = cellsPerPixel(cam.scale);
-  cam.x = Math.round(cellX - ax * k1);
-  cam.y = Math.round(cellY - ay * k1);
+  const next = Math.min(ZOOMS.length - 1, Math.max(0, zoomIndex + dir));
+  if (next === zoomIndex) return;
+  userAdjusted = true;
+  // Whatever cell is under (ax, ay) should still be there afterwards.
+  const before = cellsPerPixel(cam.scale);
+  const cellX = cam.x + ax * before, cellY = cam.y + ay * before;
+  zoomIndex = next;
+  cam.scale = ZOOMS[zoomIndex];
+  const after = cellsPerPixel(cam.scale);
+  setCam(cellX - ax * after, cellY - ay * after);
 }
 
 /* ---------- frame loop ---------- */
@@ -638,10 +682,22 @@ $('torus').onchange = e => {
   if (currentRle) { stamp(); fitView(); }
 };
 
+// One mouse notch should be one rung. Chrome reports ~100 per notch in pixel
+// mode, while a trackpad emits a stream of much smaller deltas — so accumulate
+// to a notch-sized threshold rather than stepping per event, and normalise the
+// line/page delta modes to pixels first.
+const NOTCH = 100;
+let wheelAcc = 0;
 canvas.addEventListener('wheel', e => {
   e.preventDefault();
   const r = canvas.getBoundingClientRect();
-  zoomBy(e.deltaY < 0 ? +1 : -1, e.clientX - r.left, e.clientY - r.top);
+  const [ax, ay] = [e.clientX - r.left, e.clientY - r.top];
+  const scale = e.deltaMode === 1 ? 40 : e.deltaMode === 2 ? 800 : 1;
+  wheelAcc += e.deltaY * scale;
+  while (Math.abs(wheelAcc) >= NOTCH) {
+    zoomBy(wheelAcc < 0 ? +1 : -1, ax, ay);
+    wheelAcc -= Math.sign(wheelAcc) * NOTCH;
+  }
 }, { passive: false });
 
 let drag = null;
@@ -653,8 +709,8 @@ canvas.addEventListener('pointerdown', e => {
 canvas.addEventListener('pointermove', e => {
   if (!drag) return;
   const k = cellsPerPixel(cam.scale);
-  cam.x -= Math.round((e.clientX - drag.x) * k);
-  cam.y -= Math.round((e.clientY - drag.y) * k);
+  userAdjusted = true;
+  setCam(camF.x - (e.clientX - drag.x) * k, camF.y - (e.clientY - drag.y) * k);
   drag = { x: e.clientX, y: e.clientY };
 });
 for (const ev of ['pointerup', 'pointercancel'])
@@ -668,7 +724,11 @@ addEventListener('keydown', e => {
   else if (e.key === 'f') fitView();
   else if (e.key === '+' || e.key === '=') zoomBy(+1, canvas.width / 2, canvas.height / 2);
   else if (e.key === '-') zoomBy(-1, canvas.width / 2, canvas.height / 2);
-  else if (moves[e.key]) { const [dx, dy] = moves[e.key]; cam.x += Math.round(dx); cam.y += Math.round(dy); }
+  else if (moves[e.key]) {
+    const [dx, dy] = moves[e.key];
+    userAdjusted = true;
+    setCam(camF.x + dx, camF.y + dy);
+  }
 });
 
 /* ---------- sizing ---------- */
@@ -678,6 +738,10 @@ new ResizeObserver(() => {
   const w = Math.max(1, Math.floor(r.width)), h = Math.max(1, Math.floor(r.height));
   if (w !== canvas.width || h !== canvas.height) {
     canvas.width = w; canvas.height = h;
+    // The first observation lands after the initial load, when the canvas was
+    // still at its 300x150 default — so any fit computed before now framed the
+    // pattern for the wrong viewport. Re-fit unless the user has taken over.
+    if (!userAdjusted && current) fitView();
   }
 }).observe($('viewport'));
 
