@@ -14,6 +14,9 @@ cargo run --release --bin index         # measure everything, write catalog.json
 python3 -m http.server 8080 --directory www
 ```
 
+Drag to pan, scroll to zoom, and `space` `f` `d` `+` `-` `arrows` for
+play/pause, fit, collapse the details pane, zoom and pan.
+
 ## Two corpora
 
 | | count | source | engine | how it's measured |

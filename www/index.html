@@ -108,6 +108,14 @@
     flex: none; max-height: 30vh; overflow-y: auto;
     border-top: 1px solid var(--line); background: var(--panel); padding: 12px 14px;
   }
+  /* Collapsed, the pane keeps just the pattern name so you can still see what
+     is on the stage. The toggle lives in the bar because detail() rebuilds this
+     element's children wholesale. */
+  #detail.collapsed { max-height: none; overflow: hidden; padding: 7px 14px; }
+  #detail.collapsed > *:not(h2) { display: none; }
+  #detail.collapsed h2 { margin: 0; font-size: 13px; color: var(--dim); }
+  #detailToggle { min-width: 0; padding: 6px 9px; color: var(--dim); }
+  #detailToggle:hover { color: var(--text); }
   #detail h2 { font-size: 14px; margin: 0 0 2px; font-weight: 600; }
   #detail .author { color: var(--dim); font-size: 11px; margin-bottom: 8px; }
   .props { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
@@ -169,6 +177,8 @@
       <button id="fit">Fit</button>
       <button id="zoomIn">+</button>
       <label><input type="checkbox" id="torus"> torus</label>
+      <button id="detailToggle" title="Collapse the details pane (d)" aria-expanded="true"
+              aria-controls="detail">&#9662; details</button>
       <span class="sub" id="engineTag">bitmap</span>
     </div>
 
@@ -555,6 +565,10 @@ function contentBox() {
 }
 
 function fitView() {
+  // Measure the viewport first. Relying on the ResizeObserver having already
+  // fired is a race, and losing it means fitting to the canvas's 300x150
+  // default — which framed the Gosper gun at 6x, entirely off screen.
+  syncCanvas();
   const [x, y, w0, h0] = contentBox();
   const pw = Math.max(1, w0), ph = Math.max(1, h0);
   // Cells per pixel needed to fit, with a little margin.
@@ -677,6 +691,29 @@ $('speed').oninput = e => {
 $('zoomIn').onclick = () => zoomBy(+1, canvas.width / 2, canvas.height / 2);
 $('zoomOut').onclick = () => zoomBy(-1, canvas.width / 2, canvas.height / 2);
 $('fit').onclick = fitView;
+/* ---------- details pane ---------- */
+
+const DETAIL_KEY = 'conway.detailsCollapsed';
+
+function setDetailCollapsed(on) {
+  $('detail').classList.toggle('collapsed', on);
+  $('detailToggle').innerHTML = on ? '&#9656; details' : '&#9662; details';
+  $('detailToggle').setAttribute('aria-expanded', String(!on));
+  $('detailToggle').title = on ? 'Show the details pane (d)' : 'Collapse the details pane (d)';
+  try { localStorage.setItem(DETAIL_KEY, on ? '1' : '0'); } catch { /* private mode */ }
+  // Freeing that third of the stage changes the viewport, so let the fit follow
+  // unless the camera has been taken over. The ResizeObserver does the rest.
+}
+
+$('detailToggle').onclick = () =>
+  setDetailCollapsed(!$('detail').classList.contains('collapsed'));
+
+try {
+  setDetailCollapsed(localStorage.getItem(DETAIL_KEY) === '1');
+} catch {
+  setDetailCollapsed(false);
+}
+
 $('torus').onchange = e => {
   boundary = e.target.checked ? TORUS : DEAD;
   if (currentRle) { stamp(); fitView(); }
@@ -722,6 +759,7 @@ addEventListener('keydown', e => {
   const moves = { ArrowLeft: [-pan, 0], ArrowRight: [pan, 0], ArrowUp: [0, -pan], ArrowDown: [0, pan] };
   if (e.key === ' ') { e.preventDefault(); $('play').click(); }
   else if (e.key === 'f') fitView();
+  else if (e.key === 'd') $('detailToggle').click();
   else if (e.key === '+' || e.key === '=') zoomBy(+1, canvas.width / 2, canvas.height / 2);
   else if (e.key === '-') zoomBy(-1, canvas.width / 2, canvas.height / 2);
   else if (moves[e.key]) {
@@ -733,16 +771,21 @@ addEventListener('keydown', e => {
 
 /* ---------- sizing ---------- */
 
-new ResizeObserver(() => {
+/// Match the canvas's pixel size to its laid-out size. Returns whether it
+/// changed.
+function syncCanvas() {
   const r = $('viewport').getBoundingClientRect();
   const w = Math.max(1, Math.floor(r.width)), h = Math.max(1, Math.floor(r.height));
-  if (w !== canvas.width || h !== canvas.height) {
-    canvas.width = w; canvas.height = h;
-    // The first observation lands after the initial load, when the canvas was
-    // still at its 300x150 default — so any fit computed before now framed the
-    // pattern for the wrong viewport. Re-fit unless the user has taken over.
-    if (!userAdjusted && current) fitView();
-  }
+  if (w === canvas.width && h === canvas.height) return false;
+  canvas.width = w;
+  canvas.height = h;
+  return true;
+}
+
+// Collapsing the details pane or resizing the window changes how much stage
+// there is, so re-frame — unless the camera has been taken over.
+new ResizeObserver(() => {
+  if (syncCanvas() && !userAdjusted && current) fitView();
 }).observe($('viewport'));
 
 /* ---------- go ---------- */
