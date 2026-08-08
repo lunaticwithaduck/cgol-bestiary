@@ -5,7 +5,11 @@ use ca_formats::rle::Rle;
 use trait_aliases::trait_aliases;
 use ca_formats::rle::HeaderData;
 
-const ARENA_SIZE: usize = 1_000_000; // Reasonable estimate
+const ARENA_SIZE: usize = 1_000_000;
+
+/// Hard ceiling on quadtree depth. World coordinates are `i64` and a level-k
+/// universe spans +/-2^(k-1), so this has to stay clear of 63.
+const MAX_LEVEL: u32 = 60; // Reasonable estimate
 
 #[derive(Debug)]
 struct Node {
@@ -346,6 +350,7 @@ impl Universe {
     /// universe.hash_life(); // Advance many generations at once
     /// ```
     pub fn hash_life(&mut self) {
+        self.ensure_room_for(0);
         let nested = self.centre(self.root);
         self.root = self.successor(nested, None);
         self.epochs += 2_u64.pow(self.dim());
@@ -367,8 +372,53 @@ impl Universe {
     /// universe.advance(100); // Advance exactly 100 generations
     /// ```
     pub fn advance(&mut self, gens: u64) {
+        self.ensure_room_for(gens);
         self.root = self.advance_aux(self.root, gens);
         self.epochs += gens;
+    }
+
+    /// Grow the universe until stepping `gens` generations cannot push anything
+    /// off the edge.
+    ///
+    /// Two conditions have to hold. The live cells must sit inside the central
+    /// quarter, so a step cannot reach the boundary; and the root must be deep
+    /// enough that one `successor` can span the requested jump, which needs
+    /// `2^(k-2) >= gens`.
+    ///
+    /// `centre` already grows a node — it wraps it in one a level larger with
+    /// the content centred — but `advance_aux` immediately undoes that with
+    /// `successor`, so the level never rises and a travelling pattern
+    /// eventually walks into the wall and decays there, silently. This is the
+    /// piece that was missing: a glider in a universe sized to its own 3x3
+    /// bounding box used to become a 2x2 block after 128 cells of travel.
+    pub fn ensure_room_for(&mut self, gens: u64) {
+        while self.dim() < MAX_LEVEL {
+            let k = self.dim();
+            let quarter = 1i64 << k.max(2).saturating_sub(2);
+            let centred = match self.bounds() {
+                None => true, // nothing alive; nothing to lose
+                Some((x0, y0, x1, y1)) => {
+                    x0 >= -quarter && y0 >= -quarter && x1 < quarter && y1 < quarter
+                }
+            };
+            let capacity = 1u64.checked_shl(k.saturating_sub(2)).unwrap_or(u64::MAX);
+            if centred && capacity >= gens {
+                return;
+            }
+            self.root = self.centre(self.root);
+        }
+    }
+
+    /// Current quadtree level; the universe spans `2^level` cells square.
+    pub fn level(&self) -> u32 {
+        self.dim()
+    }
+
+    /// True once the universe has grown as far as it can, past which cells may
+    /// be lost off the edge. A level-60 universe is 2^60 cells square, so this
+    /// is a backstop rather than something to plan around.
+    pub fn at_growth_limit(&self) -> bool {
+        self.dim() >= MAX_LEVEL
     }
 
     /// Adds a cell at the specified coordinates, expanding the universe if necessary.

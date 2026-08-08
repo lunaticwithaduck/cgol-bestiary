@@ -103,40 +103,31 @@ fn big_steps_land_in_the_same_place_as_small_ones() {
     assert_eq!(normalised(a.snapshot_cells()), normalised(b.snapshot_cells()));
 }
 
-/// The universe is finite and golback never grows it. Rather than let a
-/// travelling pattern silently decay against the wall — which is how the
-/// glider above used to end up as a 2x2 block — drift is detected and stepping
-/// stops.
+/// The universe grows itself to follow a travelling pattern.
+///
+/// Before `ensure_room_for`, a glider in a universe sized to its own bounding
+/// box decayed into a 2x2 block after 128 cells of travel, with no error — the
+/// nastiest failure mode this code had.
 #[test]
-fn drifting_out_of_the_universe_is_detected_not_ignored() {
+fn the_universe_grows_to_follow_a_travelling_pattern() {
     let mut hw = HashWorld::new();
     hw.load_cells(&GLIDER);
-    assert!(!hw.clipped(), "a freshly loaded pattern is not clipped");
-    assert!(hw.level() >= 22, "universe should be generous, got 2^{}", hw.level());
+    let level0 = hw.level();
+    let (x0, y0, ..) = hw.bbox();
 
-    // A glider covers a cell every 4 generations, so it takes millions to
-    // reach the edge of a 2^22 universe.
-    let mut guard = 0;
-    while !hw.clipped() && guard < 40 {
-        hw.step(1 << 20);
-        guard += 1;
-    }
-    assert!(hw.clipped(), "should eventually notice it has run out of room");
-    assert_eq!(hw.population(), 5.0, "still an intact glider when we stopped");
+    // A glider covers one cell every four generations, so this carries it two
+    // million cells out of a universe that started a few dozen across.
+    hw.step(8_000_000);
 
-    // Once clipped, stepping is refused rather than producing nonsense.
-    let (gen, bbox) = (hw.generation(), hw.bbox());
-    hw.step(1 << 20);
-    assert_eq!(hw.generation(), gen, "stepping past the wall is a no-op");
-    assert_eq!(hw.bbox(), bbox);
+    assert!(!hw.clipped(), "nowhere near the i64 growth limit");
+    assert_eq!(hw.population(), 5.0, "still an intact glider, not wall debris");
+    assert!(hw.level() > level0, "universe should have grown past 2^{level0}");
+
+    let (x1, y1, ..) = hw.bbox();
+    assert_eq!((x1 - x0).abs(), 2_000_000, "displacement along x");
+    assert_eq!((y1 - y0).abs(), 2_000_000, "displacement along y");
 }
 
-/// The quadtree walk must draw exactly what plotting every live cell draws.
-///
-/// This is the test that matters for the renderer: the walk prunes empty and
-/// sub-pixel nodes and aggregates whole subtrees, so a wrong extent or child
-/// offset produces a picture that still looks like a Life pattern. Comparing
-/// byte-for-byte against the naive rasteriser leaves nowhere to hide.
 #[test]
 fn quadtree_rendering_matches_plotting_every_cell() {
     let mut hw = HashWorld::new();

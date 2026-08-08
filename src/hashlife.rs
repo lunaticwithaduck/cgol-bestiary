@@ -16,9 +16,11 @@
 //!   [`MAX_CELLS`] stands: `metapixel-parity64` would need 1.6GB of pairs to
 //!   load a pattern its own file describes in 5,572 nodes. Building the tree
 //!   directly from a macrocell DAG would remove this.
-//! * **The universe does not grow itself.** Undersize it and escaping cells are
-//!   lost in silence, so [`HashWorld::load_cells`] sizes it with headroom and
-//!   [`HashWorld::step`] stops once the pattern could be reaching an edge.
+//! * **The universe did not grow itself.** `centre` wraps a node in a larger
+//!   one, but `advance_aux` undoes that with `successor`, so the level never
+//!   rose and a travelling pattern eventually decayed against the wall in
+//!   silence. `Universe::ensure_room_for` fixes that upstream, so a pattern can
+//!   now run until `i64` coordinates run out.
 
 use crate::macrocell::Macrocell;
 use golback::universe::Universe;
@@ -27,14 +29,10 @@ use golback::universe::Universe;
 /// asked for. 128 million cells would want two gigabytes of coordinate pairs.
 pub const MAX_CELLS: u128 = 8_000_000;
 
-/// Extra quadtree levels beyond what the pattern's bounding box needs, to give
-/// travelling and growing patterns somewhere to go. Six levels is 64× the
-/// pattern's own span in each direction.
-const HEADROOM_LEVELS: u32 = 6;
-/// Even a 3x3 glider gets a universe of 2^22 cells square — about a million
-/// cells of travel, or four million generations, before it nears an edge.
-const MIN_LEVEL: u32 = 22;
-const MAX_LEVEL: u32 = 44;
+/// Two levels of slack so the pattern starts inside the central quarter. It no
+/// longer needs generous headroom: the universe grows itself now, and a
+/// shallower initial tree makes `from_coords` cheaper.
+const HEADROOM_LEVELS: u32 = 2;
 
 const SCRATCH: usize = 1 << 20;
 
@@ -75,11 +73,8 @@ pub struct HashWorld {
     bbox: (i64, i64, i64, i64),
     generation: f64,
     loaded: bool,
-    /// Quadtree level of the universe; it spans `2^level` cells square.
-    level: u32,
-    /// Where the pattern's bounding box started, for drift measurement.
+    /// Where the pattern's bounding box started, for reporting displacement.
     origin: (i64, i64),
-    clipped: bool,
 }
 
 /// Why a load failed, as reported to JS.
@@ -108,9 +103,7 @@ impl HashWorld {
             bbox: (0, 0, 0, 0),
             generation: 0.0,
             loaded: false,
-            level: 0,
             origin: (0, 0),
-            clipped: false,
         }
     }
 
@@ -149,51 +142,34 @@ impl HashWorld {
         }
         let span = ((x1 - x0 + 1).max(y1 - y0 + 1) as u128).max(1);
 
-        // Room for the pattern *and for wherever it travels*, which is the part
-        // that is easy to get wrong. golback never grows the universe, so
-        // anything that leaves is silently lost: sized to the bounding box plus
-        // a little, a glider decays against the wall after 128 cells, and an
-        // undersized Gosper gun reports 564 cells where the truth is 11,144.
-        //
-        // Empty quadtree nodes are shared, so a vastly oversized universe costs
-        // a handful of nodes and a little recursion depth. Being generous is
-        // close to free; being tight is quietly wrong.
+        // Just enough to hold the pattern with it centred. Growth beyond this
+        // is the universe's own job now — see `Universe::ensure_room_for`.
         let needed = (128 - (span - 1).leading_zeros()).max(4);
-        let level = (needed + HEADROOM_LEVELS).clamp(MIN_LEVEL, MAX_LEVEL);
+        let level = needed + HEADROOM_LEVELS;
 
         self.universe = Universe::new();
         self.universe.init(level);
         let owned: Vec<(i64, i64)> = cells.to_vec();
         self.universe.from_coords(&owned);
-        self.level = level;
         self.origin = (x0, y0);
         self.generation = 0.0;
         self.loaded = true;
-        self.clipped = false;
         self.refresh();
         true
     }
 
-    /// How far the pattern may drift from where it started before we stop
-    /// trusting the result. Deliberately conservative: a quarter of the
-    /// universe, rather than trying to pin down golback's exact bounds.
-    fn safe_radius(&self) -> i64 {
-        if self.level >= 4 {
-            1i64 << (self.level - 2).min(62)
-        } else {
-            8
-        }
-    }
-
-    /// True once the pattern has wandered far enough that cells may have been
-    /// lost off the edge of the universe. Results past this point are an
-    /// artefact of the box, so [`step`](Self::step) refuses to go further.
+    /// True once the universe has grown as far as `i64` coordinates allow, past
+    /// which cells could be lost. A level-60 universe is 2^60 cells square, so
+    /// in practice this never fires — it is a backstop, not a limit to plan
+    /// around. Kept because silently losing cells is the one failure mode worth
+    /// refusing to have.
     pub fn clipped(&self) -> bool {
-        self.clipped
+        self.loaded && self.universe.at_growth_limit()
     }
 
+    /// Current universe level; grows as the pattern travels.
     pub fn level(&self) -> u32 {
-        self.level
+        self.universe.level()
     }
 
     /// Pull every live cell out of the quadtree.
@@ -207,22 +183,13 @@ impl HashWorld {
     }
 
     pub fn step(&mut self, n: u64) {
-        if !self.loaded || n == 0 || self.clipped {
+        if !self.loaded || n == 0 || self.clipped() {
             return;
         }
+        // `advance` grows the universe first, so nothing escapes.
         self.universe.advance(n);
         self.generation += n as f64;
         self.refresh();
-
-        // Stop the moment the pattern could be losing cells off the edge —
-        // past that point we would be showing an artefact of the box, which is
-        // worse than showing nothing.
-        let r = self.safe_radius();
-        let (x0, y0, x1, y1) = self.bbox;
-        let (ox, oy) = self.origin;
-        if (x0 - ox).abs() > r || (y0 - oy).abs() > r || (x1 - ox).abs() > r || (y1 - oy).abs() > r {
-            self.clipped = true;
-        }
     }
 
     /// Recompute the bounding box and population from the quadtree.
