@@ -1,11 +1,26 @@
 # cgol-bestiary
 
-A browser and showcase stage for the LifeWiki pattern collection, on top of a
-bit-parallel Game of Life engine written in Rust and compiled to WebAssembly.
+A browsable atlas of **2,341 Conway's Game of Life patterns**, in which every
+property — period, speed, class, the generation a methuselah settles on — was
+**measured by running the pattern**, never read from its comments. Two engines,
+written in Rust and compiled to a single 82KB WebAssembly module.
 
-Every property in the catalogue — period, speed, class, the generation a
-methuselah settles on — is **measured by running the pattern**, not parsed out
-of its comments.
+![The OTCA metapixel gun running in the browser: 115 million live cells at generation 115, beside the searchable pattern catalogue](docs/screenshot.jpg)
+
+<sup>The OTCA metapixel gun — a glider gun built out of Life cells that are
+themselves made of Life. **128,116,349 live cells**, described by 6,458 shared
+quadtree nodes, running in a browser tab. Its own file says it *"requires
+Golly"*.</sup>
+
+Historical bestiaries were full of secondhand claims copied from earlier
+bestiaries. Every entry in this one was verified by observation: the
+R-pentomino stabilises at generation **1103**, Acorn at **5206**, the glider is
+**c/4 diagonal**, and the Demonoid builds a complete copy of itself after
+**2,097,152** generations displaced exactly 4096 cells diagonally. Those numbers
+are not transcribed from LifeWiki — they are what the engines computed, and they
+agree with it.
+
+## Try it
 
 ```sh
 ./fetch-patterns.sh                     # pull both corpora (not committed)
@@ -14,8 +29,9 @@ cargo run --release --bin index         # measure everything, write catalog.json
 python3 -m http.server 8080 --directory www
 ```
 
-Drag to pan, scroll to zoom, and `space` `f` `d` `+` `-` `arrows` for
-play/pause, fit, collapse the details pane, zoom and pan.
+Then open <http://localhost:8080>. Drag to pan, scroll to zoom, and
+`space` `f` `d` `+` `-` `arrows` for play/pause, fit, collapse the details pane,
+zoom and pan.
 
 ## Two corpora
 
@@ -310,7 +326,11 @@ benchmark for it runs StreamLife across eight worker threads, which is exactly
 what wasm cannot do. The Demonoid gives the same self-replication payoff at
 106,639 cells.
 
-## Not done yet
+## Threads left hanging
+
+Please fork it and make something better. These are the loose ends, roughly in
+order of how much fun they look, and each one is genuinely open rather than
+half-finished:
 
 - **Rolling row sums.** Each row's horizontal window sum is computed three
   times — as the row above, the middle, and the row below. A two-row rolling
@@ -326,3 +346,15 @@ what wasm cannot do. The Demonoid gives the same self-replication payoff at
   patterns dominated by glider streams. Blocked on tokio, but the patch to gate
   it behind a feature is six lines and verified to compile for wasm.
 - **Thumbnails** in the browser list, rendered by the indexer.
+- **0E0P.** Goucher's self-replicating metacell is the one pattern I wanted and
+  could not get: it appears on no scriptable mirror, only LifeWiki itself, which
+  sits behind a challenge that blocks automated access. Drop
+  `0e0p-metaglider.mc` into `www/patterns-mc/` and the HashLife backend should
+  take it — it holds 128-million-cell patterns already. 93,235,805 cells.
+
+If you do build on this, the differential tests are the part worth keeping. Two
+independently written engines checked against each other cell by cell, and both
+pinned to published Life results, is what made it possible to change the engine
+twice without quietly breaking anything. Every bug in this repo's history was
+caught that way, including three of my own that produced perfectly
+plausible-looking wrong answers.
