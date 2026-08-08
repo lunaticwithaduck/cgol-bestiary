@@ -25,6 +25,15 @@ enum Node {
     Branch { level: u32, nw: u32, ne: u32, sw: u32, se: u32 },
 }
 
+/// A read-only view of one DAG node, for rebuilding the tree elsewhere.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NodeView {
+    /// An 8x8 block, bit `y * 8 + x`, with `y` increasing **downward**.
+    Leaf(u64),
+    /// Children are at `level - 1`; index 0 means empty.
+    Branch { level: u32, nw: u32, ne: u32, sw: u32, se: u32 },
+}
+
 /// Bounding box of live cells relative to a node's top-left corner.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BBox {
@@ -133,6 +142,22 @@ impl Macrocell {
                         if child >= n {
                             return Err(err(format!("{what} refers to node {child}, not yet defined")));
                         }
+                        // Children must be exactly one level down. Nothing
+                        // checked this before, and an engine rebuilding the tree
+                        // from these nodes would assemble a malformed quadtree.
+                        if child != 0 {
+                            let child_level = match nodes[child as usize] {
+                                Node::Leaf(_) => 3,
+                                Node::Branch { level, .. } => level,
+                            };
+                            if child_level != level - 1 {
+                                return Err(err(format!(
+                                    "{what} is level {child_level}, but a level-{level} node needs \
+                                     level-{} children",
+                                    level - 1
+                                )));
+                            }
+                        }
                     }
                     nodes.push(Node::Branch { level, nw, ne, sw, se });
                 }
@@ -164,6 +189,28 @@ impl Macrocell {
             nodes: nodes.len() - 1,
             dag: nodes,
             root,
+        })
+    }
+
+    /// The DAG's root node index.
+    pub fn root_id(&self) -> u32 {
+        self.root
+    }
+
+    /// Read one node of the DAG. `None` for index 0, the shared empty node.
+    ///
+    /// This exists so an engine can rebuild the tree in its own representation
+    /// without ever expanding cells — the only way to load a pattern whose
+    /// population will not fit in memory.
+    pub fn node(&self, id: u32) -> Option<NodeView> {
+        if id == 0 || id as usize >= self.dag.len() {
+            return None;
+        }
+        Some(match self.dag[id as usize] {
+            Node::Leaf(bits) => NodeView::Leaf(bits),
+            Node::Branch { level, nw, ne, sw, se } => {
+                NodeView::Branch { level, nw, ne, sw, se }
+            }
         })
     }
 

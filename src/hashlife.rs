@@ -22,12 +22,37 @@
 //!   silence. `Universe::ensure_room_for` fixes that upstream, so a pattern can
 //!   now run until `i64` coordinates run out.
 
-use crate::macrocell::Macrocell;
-use golback::universe::Universe;
+use crate::macrocell::{Macrocell, NodeView};
+use golback::universe::{NodeId, Universe, CELL_ALIVE, CELL_DEAD};
+use std::collections::HashMap;
 
-/// Above this, `from_coords` needs more memory than a wasm heap should be
-/// asked for. 128 million cells would want two gigabytes of coordinate pairs.
+/// Ceiling for [`HashWorld::load_cells`], the flat path, where cost is
+/// population: 128 million cells would want two gigabytes of coordinate pairs.
+/// Macrocell files do not go through it and are not subject to it.
 pub const MAX_CELLS: u128 = 8_000_000;
+
+/// Ceiling for the DAG path, where cost is *node* count rather than population.
+/// The largest file in the corpus has 13,854 nodes, so this is enormous
+/// headroom — it exists only to stop a hostile file exhausting memory.
+pub const MAX_NODES: usize = 4_000_000;
+
+/// Budget on golback's arena, which has no collector and so only grows.
+///
+/// Measured on the 128-million-cell `metapixel-p216-gun`, in wasm:
+///
+/// | generations |    nodes |    heap |
+/// |-------------|----------|---------|
+/// |          1M |     2.5M |  342 MB |
+/// |         10M |     7.4M | 1299 MB |
+/// |        100M |    13.8M | 1299 MB |
+/// |        500M |    17.6M | 2574 MB |
+///
+/// Growth is strongly sublinear — memoisation means the same subtrees keep
+/// recurring — so a garbage collector is not what this corpus needs. 14 million
+/// nodes keeps a tab comfortably inside a gigabyte or so, and is hundreds of
+/// millions of generations away for anything in the collection. Reloading the
+/// pattern builds a fresh `Universe`, which frees the lot.
+pub const MAX_ARENA_NODES: usize = 14_000_000;
 
 /// Two levels of slack so the pattern starts inside the central quarter. It no
 /// longer needs generous headroom: the universe grows itself now, and a
@@ -47,6 +72,59 @@ struct View {
     cam_y: i64,
     span_x: i64,
     span_y: i64,
+}
+
+/// Rebuild a macrocell DAG node as a golback quadtree node.
+///
+/// Memoised on the macrocell node index, which is what keeps this proportional
+/// to distinct nodes: a subtree shared a thousand times is built once. golback
+/// hash-conses through `combine` as well, so the sharing survives.
+///
+/// **The vertical flip is deliberate.** golback's `y` increases northward, so
+/// its `nw`/`ne` are the larger-`y` pair, while macrocell rows count downward.
+/// Feeding macrocell `sw`/`se` in as golback's northern children reproduces
+/// exactly what the flat `live_cells` + `from_coords` path produces, so both
+/// load paths agree and the renderer needs no special case.
+fn build(
+    u: &mut Universe,
+    m: &Macrocell,
+    id: u32,
+    level: u32,
+    memo: &mut HashMap<u32, NodeId>,
+) -> NodeId {
+    let Some(view) = m.node(id) else {
+        return u.empty(level); // index 0: the shared empty node
+    };
+    if let Some(&hit) = memo.get(&id) {
+        return hit;
+    }
+    let out = match view {
+        NodeView::Leaf(bits) => build_leaf(u, bits, 0, 0, 8),
+        NodeView::Branch { level, nw, ne, sw, se } => {
+            let child = level - 1;
+            let n = build(u, m, sw, child, memo);
+            let e = build(u, m, se, child, memo);
+            let s = build(u, m, nw, child, memo);
+            let w = build(u, m, ne, child, memo);
+            u.combine(n, e, s, w)
+        }
+    };
+    memo.insert(id, out);
+    out
+}
+
+/// Subdivide an 8x8 leaf into a level-3 quadtree. `y0` is the macrocell row,
+/// used directly as golback's northward `y` so the flip above stays consistent.
+fn build_leaf(u: &mut Universe, bits: u64, x0: u32, y0: u32, size: u32) -> NodeId {
+    if size == 1 {
+        return if bits >> (y0 * 8 + x0) & 1 == 1 { CELL_ALIVE } else { CELL_DEAD };
+    }
+    let h = size / 2;
+    let nw = build_leaf(u, bits, x0, y0 + h, h);
+    let ne = build_leaf(u, bits, x0 + h, y0 + h, h);
+    let sw = build_leaf(u, bits, x0, y0, h);
+    let se = build_leaf(u, bits, x0 + h, y0, h);
+    u.combine(nw, ne, sw, se)
 }
 
 /// Paint a `size`x`size` square of live cells at pixel `(px, py)`, clipped.
@@ -107,6 +185,13 @@ impl HashWorld {
         }
     }
 
+    /// Load a macrocell file by **rebuilding its quadtree directly**, node for
+    /// node, never expanding a single cell.
+    ///
+    /// This is what makes the 100-million-cell metapixels loadable at all. The
+    /// two formats are the same structure: a macrocell leaf is an 8x8 block and
+    /// golback's levels are `log2(side)`, so a leaf becomes a level-3 node and
+    /// branches map one for one. Cost is node count, not population.
     pub fn load_macrocell(&mut self, text: &str) -> LoadResult {
         let Ok(m) = Macrocell::parse(text) else {
             return LoadResult::Failed;
@@ -114,17 +199,25 @@ impl HashWorld {
         if !m.is_life() {
             return LoadResult::NotLife;
         }
-        if m.population > MAX_CELLS {
+        if m.nodes > MAX_NODES {
             return LoadResult::TooManyCells;
         }
-        let Some(cells) = m.live_cells() else {
-            return LoadResult::Failed;
-        };
-        if self.load_cells(&cells) {
-            LoadResult::Ok
-        } else {
-            LoadResult::Failed
+        if m.bbox.is_none() {
+            return LoadResult::Failed; // nothing alive
         }
+
+        self.universe = Universe::new();
+        let mut memo: HashMap<u32, NodeId> = HashMap::new();
+        let root = build(&mut self.universe, &m, m.root_id(), m.level, &mut memo);
+        self.universe.set_state(root);
+        // Pad and centre the pattern inside a larger universe.
+        self.universe.ensure_room_for(0);
+
+        self.generation = 0.0;
+        self.loaded = true;
+        self.refresh();
+        self.origin = (self.bbox.0, self.bbox.1);
+        LoadResult::Ok
     }
 
     /// Load an explicit cell list. Used by [`load_macrocell`](Self::load_macrocell)
@@ -172,6 +265,18 @@ impl HashWorld {
         self.universe.level()
     }
 
+    /// Nodes in golback's arena. It has no collector, so this only ever grows.
+    pub fn node_count(&self) -> usize {
+        self.universe.node_count()
+    }
+
+    /// True once the arena has reached [`MAX_ARENA_NODES`]. Stepping stops
+    /// rather than growing the heap until the tab dies; reloading the pattern
+    /// starts a fresh universe and releases everything.
+    pub fn at_memory_limit(&self) -> bool {
+        self.universe.node_count() >= MAX_ARENA_NODES
+    }
+
     /// Pull every live cell out of the quadtree.
     ///
     /// Costs population, unlike everything else on the hot path, so it is not
@@ -183,7 +288,7 @@ impl HashWorld {
     }
 
     pub fn step(&mut self, n: u64) {
-        if !self.loaded || n == 0 || self.clipped() {
+        if !self.loaded || n == 0 || self.clipped() || self.at_memory_limit() {
             return;
         }
         // `advance` grows the universe first, so nothing escapes.
@@ -405,6 +510,8 @@ macro_rules! hl_getter {
 hl_getter!(conway_hl_population, |w| w.population());
 hl_getter!(conway_hl_generation, |w| w.generation());
 hl_getter!(conway_hl_level, |w| w.level() as f64);
+hl_getter!(conway_hl_nodes, |w| w.node_count() as f64);
+hl_getter!(conway_hl_at_memory_limit, |w| if w.at_memory_limit() { 1.0 } else { 0.0 });
 hl_getter!(conway_hl_clipped, |w| if w.clipped() { 1.0 } else { 0.0 });
 hl_getter!(conway_hl_min_x, |w| w.bbox().0 as f64);
 hl_getter!(conway_hl_min_y, |w| w.bbox().1 as f64);

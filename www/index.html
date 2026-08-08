@@ -382,9 +382,8 @@ async function load(p) {
       const why = {
         0: 'The macrocell parser rejected this file.',
         2: 'This pattern is not Conway’s rule.',
-        3: `Loading needs every cell as a coordinate pair, and ${fmt(p.pop)} of them ` +
-           `would not fit in a wasm heap — the ceiling is ${fmt(wasm.conway_hl_max_cells())}. ` +
-           `HashLife itself is fine with it; getting it in through golback’s flat-list API is not.`,
+        3: `This file defines ${fmt(p.nodes)} quadtree nodes, past the limit this build will ` +
+           `rebuild in one go.`,
       }[code] || 'Load failed.';
       detail(p, why);
       return;
@@ -595,11 +594,15 @@ function frame(now) {
   const hl = engine === 'hashlife';
   // The torus toggle is a property of a fixed grid; HashLife is unbounded.
   $('torus').disabled = hl;
-  const clipped = hl && wasm.conway_hl_clipped(hlWorld) === 1;
-  $('engineTag').textContent = clipped
-    ? `hashlife · stopped: pattern reached the edge of its 2^${wasm.conway_hl_level(hlWorld)} universe`
-    : hl ? `hashlife · 2^${wasm.conway_hl_level(hlWorld)} universe` : 'bitmap';
-  $('engineTag').style.color = clipped ? '#e3b341' : '';
+  const stalled = hl && (wasm.conway_hl_clipped(hlWorld) === 1 || wasm.conway_hl_at_memory_limit(hlWorld) === 1);
+  $('engineTag').textContent = !hl
+    ? 'bitmap'
+    : wasm.conway_hl_at_memory_limit(hlWorld) === 1
+      ? `hashlife · paused: ${fmt(wasm.conway_hl_nodes(hlWorld))} nodes, arena full — Reset to free it`
+    : wasm.conway_hl_clipped(hlWorld) === 1
+      ? `hashlife · stopped: reached the edge of a 2^${wasm.conway_hl_level(hlWorld)} universe`
+      : `hashlife · 2^${wasm.conway_hl_level(hlWorld)} universe · ${fmt(wasm.conway_hl_nodes(hlWorld))} nodes`;
+  $('engineTag').style.color = stalled ? '#e3b341' : '';
   $('hGen').textContent = fmt(hl ? wasm.conway_hl_generation(hlWorld) : wasm.conway_generation(world));
   $('hPop').textContent = fmt(hl ? wasm.conway_hl_population(hlWorld) : wasm.conway_population(world));
   $('hZoom').textContent = cam.scale > 0 ? `${cam.scale}×` : `1/${fmt(-cam.scale)}`;

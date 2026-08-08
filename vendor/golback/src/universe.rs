@@ -89,6 +89,11 @@ const DEAD: NodeId = 0;
 const ALIVE: NodeId = 1;
 const VOID: NodeId = 2;
 
+/// The two level-0 nodes, exposed so callers can assemble a tree with
+/// [`Universe::combine`] rather than going through a flat list of coordinates.
+pub const CELL_DEAD: NodeId = DEAD;
+pub const CELL_ALIVE: NodeId = ALIVE;
+
 fn offset(k: u32) -> i64 {
     if k > 1 { 2_i64.pow(k - 2) } else { 1 }
 }
@@ -412,6 +417,46 @@ impl Universe {
     /// Current quadtree level; the universe spans `2^level` cells square.
     pub fn level(&self) -> u32 {
         self.dim()
+    }
+
+    /// How many nodes the arena holds. Never shrinks — there is no collector —
+    /// so this is the number to watch when running something chaotic.
+    pub fn node_count(&self) -> usize {
+        self.nodes.len()
+    }
+
+    pub fn node_level(&self, id: NodeId) -> u32 {
+        self.nodes[id].k
+    }
+
+    pub fn node_population(&self, id: NodeId) -> usize {
+        self.nodes[id].n
+    }
+
+    /// The shared empty node of level `k`.
+    pub fn empty(&mut self, k: u32) -> NodeId {
+        self.zero(k)
+    }
+
+    /// Assemble a node from four children, hash-consed like any other.
+    ///
+    /// Together with [`CELL_DEAD`], [`CELL_ALIVE`], [`empty`](Self::empty) and
+    /// [`set_state`](Self::set_state) this is enough to build a tree directly,
+    /// which is the only way to load a pattern whose cell count will not fit in
+    /// memory: `from_coords` needs every coordinate, so a 100-million-cell
+    /// metapixel costs 1.6GB of pairs to describe what its own file holds in
+    /// 5,572 nodes.
+    ///
+    /// Children must all be the same level. `y` increases northward, so `nw`
+    /// and `ne` are the pair with the larger `y`.
+    pub fn combine(&mut self, nw: NodeId, ne: NodeId, sw: NodeId, se: NodeId) -> NodeId {
+        debug_assert!(
+            self.nodes[nw].k == self.nodes[ne].k
+                && self.nodes[nw].k == self.nodes[sw].k
+                && self.nodes[nw].k == self.nodes[se].k,
+            "children of a node must share a level"
+        );
+        self.join(nw, ne, sw, se)
     }
 
     /// True once the universe has grown as far as it can, past which cells may

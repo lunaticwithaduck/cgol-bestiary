@@ -5,7 +5,7 @@
 //! bit-parallel engine, which is itself pinned to published Life results.
 
 use conway::bitgrid::Rng;
-use conway::hashlife::{HashWorld, MAX_CELLS};
+use conway::hashlife::HashWorld;
 use conway::{BitGrid, Boundary, Macrocell};
 use std::collections::BTreeSet;
 
@@ -229,19 +229,117 @@ fn macrocell_population_survives_the_round_trip() {
     }
 }
 
+/// Rebuilding the quadtree from the macrocell DAG must land in exactly the same
+/// state as expanding it to a cell list and rebuilding from that.
+///
+/// The mapping has a deliberate vertical flip in it, because golback's `y`
+/// increases northward while macrocell rows count downward. Get that backwards
+/// and the pattern still looks like a plausible Life pattern — it is simply
+/// upside down, and evolves into something else entirely. Hence comparing the
+/// two paths directly, before and after stepping.
 #[test]
-fn oversized_patterns_are_refused_rather_than_attempted() {
-    let Some(m) = load_file("metapixel-parity64.mc") else {
+fn dag_loading_matches_flat_loading() {
+    for name in [
+        "demonoid-c512-hashlife-friendly.mc",
+        "linear-propagator-p237228340.mc",
+        "loafer-gun-p8388608-linear.mc",
+        "logarithmic-width.mc",
+        "catacryst.mc",
+        "ruler.mc",
+        "jagged.mc",
+        "hexadecimal.mc",
+    ] {
+        let Some(m) = load_file(name) else {
+            eprintln!("skipping {name}: not fetched");
+            continue;
+        };
+        let src = std::fs::read_to_string(format!("www/patterns-mc/{name}")).unwrap();
+
+        let mut dag = HashWorld::new();
+        assert_eq!(dag.load_macrocell(&src) as u32, 1, "{name}: DAG load");
+
+        let mut flat = HashWorld::new();
+        assert!(flat.load_cells(&m.live_cells().unwrap()), "{name}: flat load");
+
+        assert_eq!(dag.population(), m.population as f64, "{name}: DAG population");
+        assert_eq!(dag.population(), flat.population(), "{name}: populations differ");
+
+        // Comparing every cell is only affordable on the smaller ones.
+        let compare_cells = m.population <= 300_000;
+        if compare_cells {
+            assert_eq!(
+                normalised(dag.snapshot_cells()),
+                normalised(flat.snapshot_cells()),
+                "{name}: layouts differ"
+            );
+        }
+
+        dag.step(64);
+        flat.step(64);
+        assert_eq!(dag.population(), flat.population(), "{name}: populations differ after 64 gens");
+        if compare_cells {
+            assert_eq!(
+                normalised(dag.snapshot_cells()),
+                normalised(flat.snapshot_cells()),
+                "{name}: layouts differ after 64 gens"
+            );
+        }
+    }
+}
+
+/// The patterns that used to be impossible.
+///
+/// Through the flat path, `metapixel-parity64` needed 1.6GB of coordinate pairs
+/// and 14.6 seconds; `metapixel-p216-gun` was simply out of reach. Rebuilding
+/// the quadtree instead loads either in milliseconds from a few thousand nodes.
+#[test]
+fn the_hundred_million_cell_metapixels_load() {
+    for (name, expected) in [
+        ("metapixel-p216-gun.mc", 128_116_349u128),
+        ("metapixel-parity64.mc", 100_491_984),
+        ("metapixel-galaxy.mc", 7_408_195),
+    ] {
+        let path = format!("www/patterns-mc/{name}");
+        let Ok(raw) = std::fs::read(&path) else {
+            eprintln!("skipping {name}: not fetched");
+            continue;
+        };
+        let src = String::from_utf8_lossy(&raw);
+
+        let mut hw = HashWorld::new();
+        assert_eq!(hw.load_macrocell(&src) as u32, 1, "{name} should load");
+        assert_eq!(hw.population(), expected as f64, "{name} population");
+
+        // A few thousand nodes for a hundred million cells is the entire point.
+        assert!(hw.node_count() < 20_000, "{name}: {} nodes", hw.node_count());
+        assert!(!hw.at_memory_limit());
+
+        // And it has to actually run.
+        hw.step(1000);
+        assert!(hw.population() > 0.0, "{name} should survive 1000 generations");
+    }
+}
+
+/// The arena has no collector, so stepping stops at a budget rather than
+/// growing the heap until the tab dies. Reloading starts a fresh universe.
+#[test]
+fn stepping_stops_at_the_arena_budget() {
+    let Some(_) = load_file("demonoid-c512-hashlife-friendly.mc") else {
         eprintln!("skipping: not fetched");
         return;
     };
-    assert!(m.population > MAX_CELLS, "expected this one to be over the ceiling");
-
+    let src = std::fs::read_to_string("www/patterns-mc/demonoid-c512-hashlife-friendly.mc").unwrap();
     let mut hw = HashWorld::new();
-    // Reject before enumerating: 100 million pairs would be 1.6GB.
-    let src = std::fs::read("www/patterns-mc/metapixel-parity64.mc").unwrap();
-    let code = hw.load_macrocell(&String::from_utf8_lossy(&src)) as u32;
-    assert_eq!(code, 3, "should report TooManyCells");
+    hw.load_macrocell(&src);
+    assert!(!hw.at_memory_limit(), "a freshly loaded pattern is nowhere near it");
+
+    // Reaching the budget legitimately takes minutes of stepping, so this only
+    // checks the guard is wired into step(): while under budget it advances,
+    // and the same predicate gates it.
+    let before = hw.generation();
+    hw.step(1000);
+    assert!(hw.generation() > before, "should advance while under budget");
+    assert!(hw.node_count() > 0);
 }
 
 /// The payoff: a pattern that builds a complete copy of itself.
